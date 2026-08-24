@@ -15,6 +15,10 @@ class UserCreate(BaseModel):
     state: Optional[str] = None
     pincode: Optional[str] = None
 
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
 class UserInDB(BaseModel):
     name: str
     email: EmailStr

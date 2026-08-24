@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from passlib.context import CryptContext
-from models.user import UserCreate, UserInDB, UserResponse
+from models.user import UserCreate, UserInDB, UserResponse, UserLogin
 from database import get_db
 
 router = APIRouter()
@@ -14,6 +14,11 @@ def get_password_hash(password: str) -> str:
     pwd_bytes = password.encode('utf-8')
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    pwd_bytes = plain_password.encode('utf-8')
+    hash_bytes = hashed_password.encode('utf-8')
+    return bcrypt.checkpw(pwd_bytes, hash_bytes)
 
 @router.post("/register", response_model=UserResponse)
 async def register(user: UserCreate, db = Depends(get_db)):
@@ -52,3 +57,25 @@ async def register(user: UserCreate, db = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database error: {str(e)}"
         )
+
+@router.post("/login", response_model=UserResponse)
+async def login(user: UserLogin, db = Depends(get_db)):
+    db_user = await db["users"].find_one({"email": user.email})
+    if not db_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+    
+    if not verify_password(user.password, db_user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+        
+    return UserResponse(
+        id=str(db_user["_id"]),
+        name=db_user["name"],
+        email=db_user["email"],
+        role=db_user["role"]
+    )
