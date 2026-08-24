@@ -4,14 +4,16 @@ from models.user import UserCreate, UserInDB, UserResponse
 from database import get_db
 
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+import bcrypt
 
-def get_password_hash(password):
+def get_password_hash(password: str) -> str:
     # bcrypt limits passwords to 72 bytes. 
-    # Truncate if longer to avoid passlib errors.
+    # Truncate if longer.
     if len(password) > 72:
         password = password[:72]
-    return pwd_context.hash(password)
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
 
 @router.post("/register", response_model=UserResponse)
 async def register(user: UserCreate, db = Depends(get_db)):
