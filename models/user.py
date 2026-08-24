@@ -10,6 +10,7 @@ class UserCreate(BaseModel):
     # Optional hospital fields if role is 'hospital_admin'
     hospital_name: Optional[str] = None
     hospital_code: Optional[str] = None
+    hospital_id: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
@@ -26,6 +27,7 @@ class UserInDB(BaseModel):
     role: str
     hospital_name: Optional[str] = None
     hospital_code: Optional[str] = None
+    hospital_id: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
@@ -36,3 +38,4 @@ class UserResponse(BaseModel):
     name: str
     email: EmailStr
     role: str
+    hospital_id: Optional[str] = None
