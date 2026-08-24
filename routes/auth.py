@@ -7,6 +7,10 @@ router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def get_password_hash(password):
+    # bcrypt limits passwords to 72 bytes. 
+    # Truncate if longer to avoid passlib errors.
+    if len(password) > 72:
+        password = password[:72]
     return pwd_context.hash(password)
 
 @router.post("/register", response_model=UserResponse)
