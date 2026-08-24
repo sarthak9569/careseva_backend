@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from core.config import settings
 from database import connect_to_mongo, close_mongo_connection, get_db
+from routes import auth
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
@@ -13,6 +14,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 
 @app.on_event("startup")
 async def startup_db_client():
