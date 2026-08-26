@@ -48,7 +48,8 @@ async def register(user: UserCreate, db = Depends(get_db)):
             id=str(result.inserted_id),
             name=user.name,
             email=user.email,
-            role=user.role
+            role=user.role,
+            hospital_id=user_dict.get("hospital_id")
         )
     except Exception as e:
         import traceback
@@ -77,5 +78,6 @@ async def login(user: UserLogin, db = Depends(get_db)):
         id=str(db_user["_id"]),
         name=db_user["name"],
         email=db_user["email"],
-        role=db_user["role"]
+        role=db_user["role"],
+        hospital_id=db_user.get("hospital_id")
     )
