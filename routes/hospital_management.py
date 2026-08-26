@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
-from models.hospital import DepartmentCreate, DepartmentUpdate, DepartmentResponse, DepartmentInDB, DoctorCreate, DoctorResponse, DoctorInDB
+from models.hospital import DepartmentCreate, DepartmentUpdate, DepartmentResponse, DepartmentInDB, DoctorCreate, DoctorUpdate, DoctorResponse, DoctorInDB
 from database import get_db
 from bson import ObjectId
 from datetime import datetime
@@ -82,6 +82,43 @@ async def get_doctors(hospital_id: str, db = Depends(get_db)):
         d["rating"] = 4.5
         result.append(DoctorResponse(**d))
     return result
+
+@router.put("/{hospital_id}/doctors/{doc_id}", response_model=DoctorResponse)
+async def update_doctor(hospital_id: str, doc_id: str, doc_update: DoctorUpdate, db = Depends(get_db)):
+    doctor = await db["doctors"].find_one({"_id": ObjectId(doc_id), "hospital_id": hospital_id})
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+        
+    update_data = doc_update.dict(exclude_unset=True)
+    if not update_data:
+        doctor["id"] = str(doctor["_id"])
+        doctor["activePatientsInQueue"] = 0
+        doctor["rating"] = 4.5
+        return DoctorResponse(**doctor)
+        
+    await db["doctors"].update_one(
+        {"_id": ObjectId(doc_id)},
+        {"$set": update_data}
+    )
+    
+    updated_doc = await db["doctors"].find_one({"_id": ObjectId(doc_id)})
+    updated_doc["id"] = str(updated_doc["_id"])
+    updated_doc["activePatientsInQueue"] = 0
+    updated_doc["rating"] = 4.5
+    return DoctorResponse(**updated_doc)
+
+@router.delete("/{hospital_id}/doctors/{doc_id}")
+async def delete_doctor(hospital_id: str, doc_id: str, db = Depends(get_db)):
+    doctor = await db["doctors"].find_one({"_id": ObjectId(doc_id), "hospital_id": hospital_id})
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+        
+    await db["doctors"].update_one(
+        {"_id": ObjectId(doc_id)},
+        {"$set": {"status": "INACTIVE"}}
+    )
+    
+    return {"message": "Doctor deleted successfully"}
 
 @router.get("/{hospital_id}/dashboard-stats")
 async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):

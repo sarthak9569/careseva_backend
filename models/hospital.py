@@ -87,6 +87,16 @@ class DoctorBase(BaseModel):
 class DoctorCreate(DoctorBase):
     pass
 
+class DoctorUpdate(BaseModel):
+    name: Optional[str] = None
+    specialization: Optional[str] = None
+    qualification: Optional[str] = None
+    experience_years: Optional[int] = None
+    department_id: Optional[str] = None
+    consultation_fee: Optional[float] = None
+    status: Optional[str] = None
+    description: Optional[str] = None
+
 class DoctorInDB(DoctorBase):
     id: str
     hospital_id: str
