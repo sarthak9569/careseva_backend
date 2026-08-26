@@ -24,7 +24,7 @@ async def create_department(hospital_id: str, department: DepartmentCreate, db =
 
 @router.get("/{hospital_id}/departments", response_model=List[DepartmentResponse])
 async def get_departments(hospital_id: str, db = Depends(get_db)):
-    cursor = db["departments"].find({"hospital_id": hospital_id, "status": "ACTIVE"})
+    cursor = db["departments"].find({"hospital_id": hospital_id})
     departments = await cursor.to_list(length=100)
     
     result = []
@@ -72,7 +72,7 @@ async def create_doctor(hospital_id: str, doctor: DoctorCreate, db = Depends(get
 
 @router.get("/{hospital_id}/doctors", response_model=List[DoctorResponse])
 async def get_doctors(hospital_id: str, db = Depends(get_db)):
-    cursor = db["doctors"].find({"hospital_id": hospital_id, "status": "ACTIVE"})
+    cursor = db["doctors"].find({"hospital_id": hospital_id})
     doctors = await cursor.to_list(length=100)
     
     result = []
