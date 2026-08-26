@@ -105,7 +105,7 @@ async def doctor_login(login_data: DoctorLogin, db = Depends(get_db)):
     return UserResponse(
         id=str(doctor["_id"]),
         name=doctor["name"],
-        email=f"{login_data.doc_id}@careseva.local", # Mock email for doctor session
+        email=f"{login_data.doc_id.lower()}@careseva.com", # Mock email for doctor session
         role="doctor",
         hospital_id=hospital_id
     )
