@@ -62,3 +62,64 @@ async def get_doctors(hospital_id: str, db = Depends(get_db)):
         d["rating"] = 4.5
         result.append(DoctorResponse(**d))
     return result
+
+@router.get("/{hospital_id}/dashboard-stats")
+async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
+    # 1. Total Patients (unique patient IDs in appointments for this hospital)
+    # Using aggregation pipeline
+    pipeline = [
+        {"$match": {"hospital_id": hospital_id}},
+        {"$group": {"_id": "$patient_id"}}
+    ]
+    unique_patients_cursor = db["appointments"].aggregate(pipeline)
+    unique_patients = await unique_patients_cursor.to_list(length=10000)
+    total_patients = len(unique_patients)
+    
+    # 2. Appointments Today
+    today_start_str = datetime.utcnow().strftime("%Y-%m-%d")
+    appointments_today_count = await db["appointments"].count_documents({
+        "hospital_id": hospital_id,
+        "appointment_date": today_start_str
+    })
+    
+    # 3. Available Doctors
+    available_doctors_count = await db["doctors"].count_documents({
+        "hospital_id": hospital_id,
+        "status": "ACTIVE"
+    })
+    
+    # 4. Today's Revenue (mocked based on appointments today * 50)
+    todays_revenue = appointments_today_count * 50
+    
+    # 5. Recent Appointments
+    recent_cursor = db["appointments"].find({"hospital_id": hospital_id}).sort("created_at", -1).limit(5)
+    recent_appts = await recent_cursor.to_list(length=5)
+    
+    recent_list = []
+    for a in recent_appts:
+        # Fetch doctor details
+        doctor = await db["doctors"].find_one({"_id": ObjectId(a["doctor_id"])}) if "doctor_id" in a and a["doctor_id"] else None
+        doctor_name = doctor["name"] if doctor else "Unknown Doctor"
+        
+        # Fetch department details
+        dept = await db["departments"].find_one({"_id": ObjectId(a["department_id"])}) if "department_id" in a and a["department_id"] else None
+        dept_name = dept["name"] if dept else "Unknown Dept"
+        
+        patient_name = a.get("patient_name") or "Unknown Patient"
+        
+        recent_list.append({
+            "id": str(a["_id"]),
+            "patient_name": patient_name,
+            "doctor_name": doctor_name,
+            "department_name": dept_name,
+            "status": a.get("status", "SCHEDULED"),
+            "time": a.get("created_at").strftime("%H:%M") if a.get("created_at") else "10:00 AM"
+        })
+        
+    return {
+        "total_patients": total_patients,
+        "appointments_today": appointments_today_count,
+        "available_doctors": available_doctors_count,
+        "todays_revenue": todays_revenue,
+        "recent_appointments": recent_list
+    }
