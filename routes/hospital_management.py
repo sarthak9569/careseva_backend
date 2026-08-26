@@ -66,12 +66,14 @@ async def create_doctor(hospital_id: str, doctor: DoctorCreate, db = Depends(get
     count = await db["doctors"].count_documents({"hospital_id": hospital_id, "doc_id": {"$regex": regex}})
     doc_id = f"{initials}{count + 1:02d}"
 
+    doctor_data = doctor.dict()
+    doctor_data["doc_id"] = doc_id
+    
     db_doc = DoctorInDB(
-        **doctor.dict(),
+        **doctor_data,
         id="",
         hospital_id=hospital_id,
-        created_at=datetime.utcnow(),
-        doc_id=doc_id
+        created_at=datetime.utcnow()
     )
     
     db_dict = db_doc.dict(exclude={"id"})
