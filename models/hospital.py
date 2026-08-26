@@ -21,11 +21,15 @@ class HospitalCreate(HospitalBase):
 
 class HospitalUpdate(BaseModel):
     name: Optional[str] = None
+    contact_person: Optional[str] = None
     phone: Optional[str] = None
+    email: Optional[EmailStr] = None
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     specialties: Optional[List[str]] = None
     status: Optional[str] = None
     verification_status: Optional[str] = None
@@ -53,6 +57,12 @@ class DepartmentBase(BaseModel):
 
 class DepartmentCreate(DepartmentBase):
     pass
+
+class DepartmentUpdate(BaseModel):
+    name: Optional[str] = None
+    specialty: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
 
 class DepartmentInDB(DepartmentBase):
     id: str

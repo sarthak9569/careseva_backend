@@ -66,3 +66,25 @@ async def get_hospital(hospital_id: str, db = Depends(get_db)):
     
     hospital["id"] = str(hospital["_id"])
     return HospitalResponse(**hospital)
+
+@router.put("/{hospital_id}", response_model=HospitalResponse)
+async def update_hospital(hospital_id: str, hospital_update: HospitalUpdate, db = Depends(get_db)):
+    hospital = await db["hospitals"].find_one({"_id": ObjectId(hospital_id)})
+    if not hospital:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+        
+    update_data = hospital_update.dict(exclude_unset=True)
+    if not update_data:
+        hospital["id"] = str(hospital["_id"])
+        return HospitalResponse(**hospital)
+        
+    update_data["updated_at"] = datetime.utcnow()
+    
+    await db["hospitals"].update_one(
+        {"_id": ObjectId(hospital_id)},
+        {"$set": update_data}
+    )
+    
+    updated_hospital = await db["hospitals"].find_one({"_id": ObjectId(hospital_id)})
+    updated_hospital["id"] = str(updated_hospital["_id"])
+    return HospitalResponse(**updated_hospital)

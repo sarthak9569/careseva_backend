@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
-from models.hospital import DepartmentCreate, DepartmentResponse, DepartmentInDB, DoctorCreate, DoctorResponse, DoctorInDB
+from models.hospital import DepartmentCreate, DepartmentUpdate, DepartmentResponse, DepartmentInDB, DoctorCreate, DoctorResponse, DoctorInDB
 from database import get_db
 from bson import ObjectId
 from datetime import datetime
@@ -32,6 +32,26 @@ async def get_departments(hospital_id: str, db = Depends(get_db)):
         d["id"] = str(d["_id"])
         result.append(DepartmentResponse(**d))
     return result
+
+@router.put("/{hospital_id}/departments/{dept_id}", response_model=DepartmentResponse)
+async def update_department(hospital_id: str, dept_id: str, dept_update: DepartmentUpdate, db = Depends(get_db)):
+    dept = await db["departments"].find_one({"_id": ObjectId(dept_id), "hospital_id": hospital_id})
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+        
+    update_data = dept_update.dict(exclude_unset=True)
+    if not update_data:
+        dept["id"] = str(dept["_id"])
+        return DepartmentResponse(**dept)
+        
+    await db["departments"].update_one(
+        {"_id": ObjectId(dept_id)},
+        {"$set": update_data}
+    )
+    
+    updated_dept = await db["departments"].find_one({"_id": ObjectId(dept_id)})
+    updated_dept["id"] = str(updated_dept["_id"])
+    return DepartmentResponse(**updated_dept)
 
 @router.post("/{hospital_id}/doctors", response_model=DoctorResponse)
 async def create_doctor(hospital_id: str, doctor: DoctorCreate, db = Depends(get_db)):
