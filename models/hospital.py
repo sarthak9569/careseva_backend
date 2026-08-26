@@ -15,6 +15,7 @@ class HospitalBase(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     specialties: List[str] = []
+    hop_id: Optional[str] = None
     
 class HospitalCreate(HospitalBase):
     password: str
@@ -33,6 +34,7 @@ class HospitalUpdate(BaseModel):
     specialties: Optional[List[str]] = None
     status: Optional[str] = None
     verification_status: Optional[str] = None
+    hop_id: Optional[str] = None
 
 class HospitalInDB(HospitalBase):
     id: str
@@ -41,12 +43,14 @@ class HospitalInDB(HospitalBase):
     verification_status: str = "PENDING" # PENDING, APPROVED, REJECTED
     created_at: datetime
     updated_at: datetime
+    hop_id: str
 
 class HospitalResponse(HospitalBase):
     id: str
     status: str
     verification_status: str
     created_at: datetime
+    hop_id: str
 
 # Department Models
 class DepartmentBase(BaseModel):
@@ -83,6 +87,7 @@ class DoctorBase(BaseModel):
     consultation_fee: float = 0.0
     status: str = "ACTIVE"
     description: Optional[str] = None
+    doc_id: Optional[str] = None
 
 class DoctorCreate(DoctorBase):
     pass
@@ -96,14 +101,17 @@ class DoctorUpdate(BaseModel):
     consultation_fee: Optional[float] = None
     status: Optional[str] = None
     description: Optional[str] = None
+    doc_id: Optional[str] = None
 
 class DoctorInDB(DoctorBase):
     id: str
     hospital_id: str
     created_at: datetime
+    doc_id: str
     
 class DoctorResponse(DoctorBase):
     id: str
     hospital_id: str
     activePatientsInQueue: int = 0
     rating: float = 4.5 # Default mockup until reviews are implemented
+    doc_id: str

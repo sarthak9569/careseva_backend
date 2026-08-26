@@ -27,12 +27,14 @@ class QueueResponse(QueueBase):
 class QueueEntryBase(BaseModel):
     queue_id: str
     patient_id: str
+    patient_name: str = "Unknown"
     token_number: int
     status: str = "WAITING" # WAITING, CALLED, IN_CONSULTATION, COMPLETED, CANCELLED, NO_SHOW
 
 class QueueEntryCreate(BaseModel):
     queue_id: str
     patient_id: str
+    patient_name: str = "Unknown"
 
 class QueueEntryInDB(QueueEntryBase):
     id: str

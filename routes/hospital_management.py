@@ -55,11 +55,23 @@ async def update_department(hospital_id: str, dept_id: str, dept_update: Departm
 
 @router.post("/{hospital_id}/doctors", response_model=DoctorResponse)
 async def create_doctor(hospital_id: str, doctor: DoctorCreate, db = Depends(get_db)):
+    # Generate DocID
+    dept = await db["departments"].find_one({"_id": ObjectId(doctor.department_id)})
+    dept_name = dept["name"] if dept else "GEN"
+    initials = "".join([c for c in dept_name if c.isalpha()]).upper()[:6]
+    if not initials:
+        initials = "DOC"
+        
+    regex = f"^{initials}[0-9]+$"
+    count = await db["doctors"].count_documents({"hospital_id": hospital_id, "doc_id": {"$regex": regex}})
+    doc_id = f"{initials}{count + 1:02d}"
+
     db_doc = DoctorInDB(
         **doctor.dict(),
         id="",
         hospital_id=hospital_id,
-        created_at=datetime.utcnow()
+        created_at=datetime.utcnow(),
+        doc_id=doc_id
     )
     
     db_dict = db_doc.dict(exclude={"id"})

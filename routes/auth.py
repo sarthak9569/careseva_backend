@@ -81,3 +81,31 @@ async def login(user: UserLogin, db = Depends(get_db)):
         role=db_user["role"],
         hospital_id=db_user.get("hospital_id")
     )
+
+from pydantic import BaseModel
+
+class DoctorLogin(BaseModel):
+    hop_id: str
+    doc_id: str
+
+@router.post("/doctor-login", response_model=UserResponse)
+async def doctor_login(login_data: DoctorLogin, db = Depends(get_db)):
+    # 1. Find the hospital by HopID
+    hospital = await db["hospitals"].find_one({"hop_id": login_data.hop_id, "status": "ACTIVE"})
+    if not hospital:
+        raise HTTPException(status_code=401, detail="Invalid HopID or Hospital not found")
+        
+    hospital_id = str(hospital["_id"])
+    
+    # 2. Find the doctor by DocID within this hospital
+    doctor = await db["doctors"].find_one({"hospital_id": hospital_id, "doc_id": login_data.doc_id, "status": "ACTIVE"})
+    if not doctor:
+        raise HTTPException(status_code=401, detail="Invalid DocID or Doctor not found")
+        
+    return UserResponse(
+        id=str(doctor["_id"]),
+        name=doctor["name"],
+        email=f"{login_data.doc_id}@careseva.local", # Mock email for doctor session
+        role="doctor",
+        hospital_id=hospital_id
+    )

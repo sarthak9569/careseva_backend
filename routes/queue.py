@@ -50,7 +50,6 @@ async def websocket_endpoint(websocket: WebSocket, doctor_id: str):
 @router.post("/join", response_model=QueueEntryResponse)
 async def join_queue(entry: QueueEntryCreate, db = Depends(get_db)):
     # Get or create the queue for this doctor today
-    # For simplicity, we just use one active queue per doctor
     queue = await db["queues"].find_one({
         "hospital_id": entry.hospital_id,
         "doctor_id": entry.doctor_id,
@@ -85,6 +84,7 @@ async def join_queue(entry: QueueEntryCreate, db = Depends(get_db)):
         id="",
         queue_id=queue_id,
         patient_id=entry.patient_id,
+        patient_name=entry.patient_name,
         token_number=token_num,
         hospital_id=entry.hospital_id,
         department_id=entry.department_id,
@@ -105,8 +105,71 @@ async def join_queue(entry: QueueEntryCreate, db = Depends(get_db)):
     
     return QueueEntryResponse(**entry_dict)
 
+@router.get("/{doctor_id}/entries", response_model=List[QueueEntryResponse])
+async def get_queue_entries(doctor_id: str, db = Depends(get_db)):
+    queue = await db["queues"].find_one({
+        "doctor_id": doctor_id,
+        "status": "ACTIVE"
+    })
+    if not queue:
+        return []
+        
+    cursor = db["queue_entries"].find({"queue_id": str(queue["_id"])})
+    entries = await cursor.to_list(length=100)
+    
+    result = []
+    for e in entries:
+        e["id"] = str(e["_id"])
+        result.append(QueueEntryResponse(**e))
+    return result
+
+@router.post("/{doctor_id}/complete")
+async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
+    queue = await db["queues"].find_one({
+        "doctor_id": doctor_id,
+        "status": "ACTIVE"
+    })
+    if not queue:
+        raise HTTPException(status_code=404, detail="Active queue not found")
+        
+    current_token = queue["current_token"]
+    if current_token > 0:
+        # Mark current token as COMPLETED
+        await db["queue_entries"].update_one(
+            {"queue_id": str(queue["_id"]), "token_number": current_token},
+            {"$set": {"status": "COMPLETED", "updated_at": datetime.utcnow()}}
+        )
+        
+    # Auto-advance to next token (as requested by user)
+    new_token = current_token + 1
+    
+    # Only advance if we haven't exceeded total tokens
+    if new_token <= queue["total_tokens"]:
+        await db["queues"].update_one(
+            {"_id": queue["_id"]},
+            {"$set": {"current_token": new_token, "updated_at": datetime.utcnow()}}
+        )
+        
+        await db["queue_entries"].update_one(
+            {"queue_id": str(queue["_id"]), "token_number": new_token},
+            {"$set": {"status": "CALLED", "updated_at": datetime.utcnow()}}
+        )
+    else:
+        # If no more tokens, just leave current_token as is (or reset if desired, but usually we just keep it at max)
+        new_token = current_token
+
+    # Broadcast update
+    await manager.broadcast_queue_update(doctor_id, {
+        "event": "queue_advanced",
+        "current_token": new_token
+    })
+    
+    return {"status": "success", "current_token": new_token}
+
 @router.post("/{doctor_id}/next")
 async def call_next_patient(doctor_id: str, db = Depends(get_db)):
+    # Original route left for manual advancement if needed, 
+    # but /complete also advances now.
     queue = await db["queues"].find_one({
         "doctor_id": doctor_id,
         "status": "ACTIVE"

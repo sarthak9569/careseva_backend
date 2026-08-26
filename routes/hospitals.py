@@ -5,8 +5,13 @@ from database import get_db
 from routes.auth import get_password_hash
 from bson import ObjectId
 from datetime import datetime
+import random
+import string
 
 router = APIRouter()
+
+def generate_hop_id():
+    return f"CARE-{''.join(random.choices(string.digits, k=4))}"
 
 @router.post("/register", response_model=HospitalResponse)
 async def register_hospital(hospital: HospitalCreate, db = Depends(get_db)):
@@ -24,13 +29,19 @@ async def register_hospital(hospital: HospitalCreate, db = Depends(get_db)):
         hospital_dict = hospital.dict()
         del hospital_dict["password"]
         
+        # Generate unique HopID
+        hop_id = generate_hop_id()
+        while await db["hospitals"].find_one({"hop_id": hop_id}):
+            hop_id = generate_hop_id()
+            
         # Prepare DB model
         db_hospital = HospitalInDB(
             **hospital_dict,
             id="", # Will be set by mongo
             hashed_password=hashed_password,
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            updated_at=datetime.utcnow(),
+            hop_id=hop_id
         )
         
         # Insert into database
@@ -38,6 +49,17 @@ async def register_hospital(hospital: HospitalCreate, db = Depends(get_db)):
         result = await db["hospitals"].insert_one(db_dict)
         
         db_dict["id"] = str(result.inserted_id)
+        
+        # Also create an admin user in users collection for login (auth.py uses users collection)
+        admin_user = {
+            "name": hospital.name,
+            "email": hospital.email,
+            "role": "admin",
+            "hashed_password": hashed_password,
+            "hospital_id": db_dict["id"]
+        }
+        await db["users"].insert_one(admin_user)
+        
         return HospitalResponse(**db_dict)
     except Exception as e:
         import traceback
