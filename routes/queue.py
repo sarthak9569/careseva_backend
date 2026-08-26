@@ -123,6 +123,34 @@ async def get_queue_entries(doctor_id: str, db = Depends(get_db)):
         result.append(QueueEntryResponse(**e))
     return result
 
+@router.get("/{doctor_id}/history", response_model=List[QueueEntryResponse])
+async def get_patient_history(doctor_id: str, date: str = None, db = Depends(get_db)):
+    from typing import Optional
+    
+    query = {
+        "doctor_id": doctor_id,
+        "status": {"$in": ["COMPLETED", "CANCELLED", "NO_SHOW"]}
+    }
+    
+    if date:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+            start = datetime.combine(target_date, datetime.min.time())
+            end = datetime.combine(target_date, datetime.max.time())
+            query["updated_at"] = {"$gte": start, "$lte": end}
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+            
+    # Sort by updated_at descending so most recent is first
+    cursor = db["queue_entries"].find(query).sort("updated_at", -1)
+    entries = await cursor.to_list(length=200)
+    
+    result = []
+    for e in entries:
+        e["id"] = str(e["_id"])
+        result.append(QueueEntryResponse(**e))
+    return result
+
 @router.post("/{doctor_id}/complete")
 async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
     queue = await db["queues"].find_one({

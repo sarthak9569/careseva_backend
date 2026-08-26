@@ -50,6 +50,7 @@ class QueueEntryResponse(QueueEntryBase):
     department_id: str
     doctor_id: str
     created_at: datetime
+    updated_at: datetime
 
 # Appointment Model
 class AppointmentBase(BaseModel):
