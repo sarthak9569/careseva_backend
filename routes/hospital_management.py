@@ -194,3 +194,74 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
         "todays_revenue": todays_revenue,
         "recent_appointments": recent_list
     }
+
+@router.get("/{hospital_id}/department-overview")
+async def get_departments_live_overview(hospital_id: str, db = Depends(get_db)):
+    dept_cursor = db["departments"].find({"hospital_id": hospital_id})
+    departments = await dept_cursor.to_list(length=100)
+    
+    result = []
+    for d in departments:
+        dept_id = str(d["_id"])
+        
+        # 1. Total bookings for this department
+        total_bookings = await db["appointments"].count_documents({
+            "hospital_id": hospital_id,
+            "department_id": dept_id
+        })
+        
+        # 2. Ongoing queue entries (WAITING, CALLED, IN_CONSULTATION)
+        ongoing_queue = await db["queue_entries"].count_documents({
+            "hospital_id": hospital_id,
+            "department_id": dept_id,
+            "status": {"$in": ["WAITING", "CALLED", "IN_CONSULTATION"]}
+        })
+        
+        # If no entries by department_id, check by queue doctor_id or appointments
+        if ongoing_queue == 0:
+            ongoing_appts = await db["appointments"].count_documents({
+                "hospital_id": hospital_id,
+                "department_id": dept_id,
+                "status": {"$in": ["BOOKED", "WAITING", "IN_PROGRESS", "CALLED"]}
+            })
+            ongoing_queue = ongoing_appts
+            
+        # 3. Completed appointments
+        completed_count = await db["appointments"].count_documents({
+            "hospital_id": hospital_id,
+            "department_id": dept_id,
+            "status": "COMPLETED"
+        })
+        
+        # 4. Cancelled count
+        cancelled_count = await db["appointments"].count_documents({
+            "hospital_id": hospital_id,
+            "department_id": dept_id,
+            "status": "CANCELLED"
+        })
+        
+        # 5. Active doctors in this department
+        doc_cursor = db["doctors"].find({
+            "hospital_id": hospital_id,
+            "department_id": dept_id,
+            "status": "ACTIVE"
+        })
+        doctors_list = await doc_cursor.to_list(length=50)
+        doctor_summaries = [{"id": str(doc["_id"]), "name": doc["name"], "specialization": doc.get("specialization", "")} for doc in doctors_list]
+        
+        result.append({
+            "id": dept_id,
+            "name": d.get("name", "General"),
+            "specialty": d.get("specialty", ""),
+            "description": d.get("description", ""),
+            "status": d.get("status", "ACTIVE"),
+            "total_bookings": total_bookings,
+            "ongoing_queue": ongoing_queue,
+            "completed_count": completed_count,
+            "cancelled_count": cancelled_count,
+            "active_doctors_count": len(doctor_summaries),
+            "doctors": doctor_summaries
+        })
+        
+    return result
+

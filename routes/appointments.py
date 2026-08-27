@@ -87,15 +87,72 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
     return AppointmentResponse(**db_dict)
 
 @router.get("/hospital/{hospital_id}", response_model=List[AppointmentResponse])
-async def get_hospital_appointments(hospital_id: str, db = Depends(get_db)):
-    cursor = db["appointments"].find({"hospital_id": hospital_id})
-    appointments = await cursor.to_list(length=100)
+async def get_hospital_appointments(
+    hospital_id: str, 
+    department_id: str = None,
+    date: str = None,
+    status: str = None,
+    db = Depends(get_db)
+):
+    query = {"hospital_id": hospital_id}
+    if department_id:
+        query["department_id"] = department_id
+    if date:
+        query["appointment_date"] = date
+    if status:
+        query["status"] = status
+        
+    cursor = db["appointments"].find(query).sort("created_at", -1)
+    appointments = await cursor.to_list(length=300)
     
     result = []
     for a in appointments:
         a["id"] = str(a["_id"])
         result.append(AppointmentResponse(**a))
     return result
+
+@router.get("/doctor/{doctor_id}", response_model=List[AppointmentResponse])
+async def get_doctor_appointments(
+    doctor_id: str,
+    date: str = None,
+    status: str = None,
+    db = Depends(get_db)
+):
+    query = {"doctor_id": doctor_id}
+    if date:
+        query["appointment_date"] = date
+    if status:
+        query["status"] = status
+
+    cursor = db["appointments"].find(query).sort("created_at", -1)
+    appointments = await cursor.to_list(length=200)
+
+    result = []
+    for a in appointments:
+        a["id"] = str(a["_id"])
+        result.append(AppointmentResponse(**a))
+    return result
+
+@router.put("/{appointment_id}/status")
+async def update_appointment_status(
+    appointment_id: str,
+    status_update: dict,
+    db = Depends(get_db)
+):
+    new_status = status_update.get("status")
+    if not new_status:
+        raise HTTPException(status_code=400, detail="Status field is required")
+        
+    appt = await db["appointments"].find_one({"_id": ObjectId(appointment_id)})
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+        
+    await db["appointments"].update_one(
+        {"_id": ObjectId(appointment_id)},
+        {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
+    )
+    
+    return {"message": "Status updated successfully", "status": new_status}
 
 @router.get("/patient/{patient_id}", response_model=List[AppointmentResponse])
 async def get_patient_appointments(patient_id: str, db = Depends(get_db)):
@@ -107,3 +164,4 @@ async def get_patient_appointments(patient_id: str, db = Depends(get_db)):
         a["id"] = str(a["_id"])
         result.append(AppointmentResponse(**a))
     return result
+
