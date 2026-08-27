@@ -15,9 +15,19 @@ def get_ist_now() -> datetime:
 @router.post("/", response_model=AppointmentResponse)
 async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db)):
     appt_data = appointment.dict()
-    # Default appointment date to today in IST if empty
+    now_ist = get_ist_now()
+
+    # Normalize human labels like "Today, Aug 28" to YYYY-MM-DD
     if not appt_data.get("appointment_date"):
-        appt_data["appointment_date"] = get_ist_now().strftime("%Y-%m-%d")
+        appt_data["appointment_date"] = now_ist.strftime("%Y-%m-%d")
+    else:
+        d_str = str(appt_data["appointment_date"]).strip().lower()
+        if "today" in d_str:
+            appt_data["appointment_date"] = now_ist.strftime("%Y-%m-%d")
+        elif "tomorrow" in d_str:
+            appt_data["appointment_date"] = (now_ist + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif "yesterday" in d_str:
+            appt_data["appointment_date"] = (now_ist - timedelta(days=1)).strftime("%Y-%m-%d")
 
     db_appt = AppointmentInDB(
         **appt_data,
@@ -29,7 +39,8 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
     db_dict = db_appt.dict(exclude={"id"})
     result = await db["appointments"].insert_one(db_dict)
     
-    db_dict["id"] = str(result.inserted_id)
+    appt_id = str(result.inserted_id)
+    db_dict["id"] = appt_id
 
     # Automatically add to the doctor's queue
     hospital_id = appointment.hospital_id
@@ -68,7 +79,7 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
     # Increment total_tokens
     await db["queues"].update_one({"_id": ObjectId(queue_id)}, {"$inc": {"total_tokens": 1}})
     
-    # Create entry
+    # Create entry with linked appointment_id
     from models.queue import QueueEntryInDB
     db_entry = QueueEntryInDB(
         id="",
@@ -79,6 +90,7 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
         hospital_id=hospital_id,
         department_id=department_id,
         doctor_id=doctor_id,
+        appointment_id=appt_id,
         created_at=get_ist_now(),
         updated_at=get_ist_now(),
         status="WAITING"
@@ -108,10 +120,25 @@ async def get_hospital_appointments(
     if department_id:
         query["department_id"] = department_id
     if date:
-        query["appointment_date"] = date
+        try:
+            target_d = datetime.strptime(date, "%Y-%m-%d").date()
+            # In IST, date spans from target_d 00:00 to 23:59:59 (in UTC: minus 5h30m)
+            day_start_ist = datetime(target_d.year, target_d.month, target_d.day, 0, 0, 0, tzinfo=IST)
+            day_end_ist = datetime(target_d.year, target_d.month, target_d.day, 23, 59, 59, 999999, tzinfo=IST)
+            day_start_utc = day_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+            day_end_utc = day_end_ist.astimezone(timezone.utc).replace(tzinfo=None)
+            
+            query["$or"] = [
+                {"appointment_date": date},
+                {"appointment_date": {"$regex": date, "$options": "i"}},
+                {"created_at": {"$gte": day_start_utc, "$lte": day_end_utc}},
+                {"created_at": {"$gte": day_start_ist, "$lte": day_end_ist}}
+            ]
+        except Exception:
+            query["appointment_date"] = date
+
     if status and status != "All":
         if status.upper() == "WAITING":
-            # WAITING matches both explicitly WAITING and active BOOKED in queue
             query["status"] = {"$in": ["WAITING", "BOOKED"]}
         elif status.upper() == "BOOKED":
             query["status"] = "BOOKED"
@@ -140,7 +167,22 @@ async def get_doctor_appointments(
 ):
     query = {"doctor_id": doctor_id}
     if date:
-        query["appointment_date"] = date
+        try:
+            target_d = datetime.strptime(date, "%Y-%m-%d").date()
+            day_start_ist = datetime(target_d.year, target_d.month, target_d.day, 0, 0, 0, tzinfo=IST)
+            day_end_ist = datetime(target_d.year, target_d.month, target_d.day, 23, 59, 59, 999999, tzinfo=IST)
+            day_start_utc = day_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+            day_end_utc = day_end_ist.astimezone(timezone.utc).replace(tzinfo=None)
+            
+            query["$or"] = [
+                {"appointment_date": date},
+                {"appointment_date": {"$regex": date, "$options": "i"}},
+                {"created_at": {"$gte": day_start_utc, "$lte": day_end_utc}},
+                {"created_at": {"$gte": day_start_ist, "$lte": day_end_ist}}
+            ]
+        except Exception:
+            query["appointment_date"] = date
+
     if status and status != "All":
         if status.upper() == "WAITING":
             query["status"] = {"$in": ["WAITING", "BOOKED"]}

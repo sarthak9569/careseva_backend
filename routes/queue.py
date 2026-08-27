@@ -172,15 +172,24 @@ async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
             {"queue_id": str(queue["_id"]), "token_number": current_token},
             {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
         )
-        if entry and "patient_id" in entry:
-            await db["appointments"].update_one(
-                {
-                    "doctor_id": doctor_id,
-                    "patient_id": entry["patient_id"],
-                    "status": {"$in": ["BOOKED", "WAITING", "CALLED", "IN_PROGRESS"]}
-                },
-                {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
-            )
+        if entry:
+            if entry.get("appointment_id"):
+                try:
+                    await db["appointments"].update_one(
+                        {"_id": ObjectId(entry["appointment_id"])},
+                        {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
+                    )
+                except Exception:
+                    pass
+            elif entry.get("patient_id"):
+                await db["appointments"].update_one(
+                    {
+                        "doctor_id": doctor_id,
+                        "patient_id": entry["patient_id"],
+                        "status": {"$in": ["BOOKED", "WAITING", "CALLED", "IN_PROGRESS"]}
+                    },
+                    {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
+                )
         
     # Auto-advance to next token (as requested by user)
     new_token = current_token + 1
@@ -196,15 +205,24 @@ async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
             {"queue_id": str(queue["_id"]), "token_number": new_token},
             {"$set": {"status": "CALLED", "updated_at": get_ist_now()}}
         )
-        if called_entry and "patient_id" in called_entry:
-            await db["appointments"].update_one(
-                {
-                    "doctor_id": doctor_id,
-                    "patient_id": called_entry["patient_id"],
-                    "status": {"$in": ["BOOKED", "WAITING"]}
-                },
-                {"$set": {"status": "IN_PROGRESS", "updated_at": get_ist_now()}}
-            )
+        if called_entry:
+            if called_entry.get("appointment_id"):
+                try:
+                    await db["appointments"].update_one(
+                        {"_id": ObjectId(called_entry["appointment_id"])},
+                        {"$set": {"status": "IN_PROGRESS", "updated_at": get_ist_now()}}
+                    )
+                except Exception:
+                    pass
+            elif called_entry.get("patient_id"):
+                await db["appointments"].update_one(
+                    {
+                        "doctor_id": doctor_id,
+                        "patient_id": called_entry["patient_id"],
+                        "status": {"$in": ["BOOKED", "WAITING"]}
+                    },
+                    {"$set": {"status": "IN_PROGRESS", "updated_at": get_ist_now()}}
+                )
     else:
         # If no more tokens, just leave current_token as is (or reset if desired, but usually we just keep it at max)
         new_token = current_token
@@ -239,15 +257,24 @@ async def call_next_patient(doctor_id: str, db = Depends(get_db)):
         {"queue_id": str(queue["_id"]), "token_number": new_token},
         {"$set": {"status": "CALLED", "updated_at": get_ist_now()}}
     )
-    if called_entry and "patient_id" in called_entry:
-        await db["appointments"].update_one(
-            {
-                "doctor_id": doctor_id,
-                "patient_id": called_entry["patient_id"],
-                "status": {"$in": ["BOOKED", "WAITING"]}
-            },
-            {"$set": {"status": "IN_PROGRESS", "updated_at": get_ist_now()}}
-        )
+    if called_entry:
+        if called_entry.get("appointment_id"):
+            try:
+                await db["appointments"].update_one(
+                    {"_id": ObjectId(called_entry["appointment_id"])},
+                    {"$set": {"status": "IN_PROGRESS", "updated_at": get_ist_now()}}
+                )
+            except Exception:
+                pass
+        elif called_entry.get("patient_id"):
+            await db["appointments"].update_one(
+                {
+                    "doctor_id": doctor_id,
+                    "patient_id": called_entry["patient_id"],
+                    "status": {"$in": ["BOOKED", "WAITING"]}
+                },
+                {"$set": {"status": "IN_PROGRESS", "updated_at": get_ist_now()}}
+            )
     
     # Broadcast update
     await manager.broadcast_queue_update(doctor_id, {

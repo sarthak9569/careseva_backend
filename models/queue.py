@@ -30,11 +30,13 @@ class QueueEntryBase(BaseModel):
     patient_name: str = "Unknown"
     token_number: int
     status: str = "WAITING" # WAITING, CALLED, IN_CONSULTATION, COMPLETED, CANCELLED, NO_SHOW
+    appointment_id: Optional[str] = None
 
 class QueueEntryCreate(BaseModel):
     queue_id: str
     patient_id: str
     patient_name: str = "Unknown"
+    appointment_id: Optional[str] = None
 
 class QueueEntryInDB(QueueEntryBase):
     id: str
