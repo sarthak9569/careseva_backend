@@ -1,19 +1,29 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from typing import List
+from typing import List, Optional
 from models.queue import AppointmentCreate, AppointmentResponse, AppointmentInDB
 from database import get_db
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 router = APIRouter()
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_ist_now() -> datetime:
+    return datetime.now(IST)
+
 @router.post("/", response_model=AppointmentResponse)
 async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db)):
+    appt_data = appointment.dict()
+    # Default appointment date to today in IST if empty
+    if not appt_data.get("appointment_date"):
+        appt_data["appointment_date"] = get_ist_now().strftime("%Y-%m-%d")
+
     db_appt = AppointmentInDB(
-        **appointment.dict(),
+        **appt_data,
         id="",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
+        created_at=get_ist_now(),
+        updated_at=get_ist_now()
     )
     
     db_dict = db_appt.dict(exclude={"id"})
@@ -42,8 +52,8 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
             hospital_id=hospital_id,
             department_id=department_id,
             doctor_id=doctor_id,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=get_ist_now(),
+            updated_at=get_ist_now(),
             total_tokens=0,
             current_token=0
         )
@@ -69,8 +79,8 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
         hospital_id=hospital_id,
         department_id=department_id,
         doctor_id=doctor_id,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=get_ist_now(),
+        updated_at=get_ist_now(),
         status="WAITING"
     )
     
@@ -99,8 +109,18 @@ async def get_hospital_appointments(
         query["department_id"] = department_id
     if date:
         query["appointment_date"] = date
-    if status:
-        query["status"] = status
+    if status and status != "All":
+        if status.upper() == "WAITING":
+            # WAITING matches both explicitly WAITING and active BOOKED in queue
+            query["status"] = {"$in": ["WAITING", "BOOKED"]}
+        elif status.upper() == "BOOKED":
+            query["status"] = "BOOKED"
+        elif status.upper() == "COMPLETED":
+            query["status"] = "COMPLETED"
+        elif status.upper() == "CANCELLED":
+            query["status"] = "CANCELLED"
+        else:
+            query["status"] = status
         
     cursor = db["appointments"].find(query).sort("created_at", -1)
     appointments = await cursor.to_list(length=300)
@@ -121,8 +141,11 @@ async def get_doctor_appointments(
     query = {"doctor_id": doctor_id}
     if date:
         query["appointment_date"] = date
-    if status:
-        query["status"] = status
+    if status and status != "All":
+        if status.upper() == "WAITING":
+            query["status"] = {"$in": ["WAITING", "BOOKED"]}
+        else:
+            query["status"] = status
 
     cursor = db["appointments"].find(query).sort("created_at", -1)
     appointments = await cursor.to_list(length=200)
@@ -149,8 +172,18 @@ async def update_appointment_status(
         
     await db["appointments"].update_one(
         {"_id": ObjectId(appointment_id)},
-        {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
+        {"$set": {"status": new_status, "updated_at": get_ist_now()}}
     )
+
+    # Also update queue entries status if linked
+    if "patient_id" in appt and "doctor_id" in appt:
+        queue_entry_status = new_status
+        if new_status == "BOOKED":
+            queue_entry_status = "WAITING"
+        await db["queue_entries"].update_many(
+            {"doctor_id": appt["doctor_id"], "patient_id": appt["patient_id"]},
+            {"$set": {"status": queue_entry_status, "updated_at": get_ist_now()}}
+        )
     
     return {"message": "Status updated successfully", "status": new_status}
 
@@ -164,4 +197,5 @@ async def get_patient_appointments(patient_id: str, db = Depends(get_db)):
         a["id"] = str(a["_id"])
         result.append(AppointmentResponse(**a))
     return result
+
 

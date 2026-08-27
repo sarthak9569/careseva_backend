@@ -3,8 +3,13 @@ from typing import List, Dict
 from models.queue import QueueCreate, QueueResponse, QueueInDB, QueueEntryCreate, QueueEntryResponse, QueueEntryInDB
 from database import get_db
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import json
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_ist_now() -> datetime:
+    return datetime.now(IST)
 
 router = APIRouter()
 
@@ -163,10 +168,19 @@ async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
     current_token = queue["current_token"]
     if current_token > 0:
         # Mark current token as COMPLETED
-        await db["queue_entries"].update_one(
+        entry = await db["queue_entries"].find_one_and_update(
             {"queue_id": str(queue["_id"]), "token_number": current_token},
-            {"$set": {"status": "COMPLETED", "updated_at": datetime.utcnow()}}
+            {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
         )
+        if entry and "patient_id" in entry:
+            await db["appointments"].update_one(
+                {
+                    "doctor_id": doctor_id,
+                    "patient_id": entry["patient_id"],
+                    "status": {"$in": ["BOOKED", "WAITING", "CALLED", "IN_PROGRESS"]}
+                },
+                {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
+            )
         
     # Auto-advance to next token (as requested by user)
     new_token = current_token + 1
@@ -175,13 +189,22 @@ async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
     if new_token <= queue["total_tokens"]:
         await db["queues"].update_one(
             {"_id": queue["_id"]},
-            {"$set": {"current_token": new_token, "updated_at": datetime.utcnow()}}
+            {"$set": {"current_token": new_token, "updated_at": get_ist_now()}}
         )
         
-        await db["queue_entries"].update_one(
+        called_entry = await db["queue_entries"].find_one_and_update(
             {"queue_id": str(queue["_id"]), "token_number": new_token},
-            {"$set": {"status": "CALLED", "updated_at": datetime.utcnow()}}
+            {"$set": {"status": "CALLED", "updated_at": get_ist_now()}}
         )
+        if called_entry and "patient_id" in called_entry:
+            await db["appointments"].update_one(
+                {
+                    "doctor_id": doctor_id,
+                    "patient_id": called_entry["patient_id"],
+                    "status": {"$in": ["BOOKED", "WAITING"]}
+                },
+                {"$set": {"status": "IN_PROGRESS", "updated_at": get_ist_now()}}
+            )
     else:
         # If no more tokens, just leave current_token as is (or reset if desired, but usually we just keep it at max)
         new_token = current_token
@@ -196,8 +219,6 @@ async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
 
 @router.post("/{doctor_id}/next")
 async def call_next_patient(doctor_id: str, db = Depends(get_db)):
-    # Original route left for manual advancement if needed, 
-    # but /complete also advances now.
     queue = await db["queues"].find_one({
         "doctor_id": doctor_id,
         "status": "ACTIVE"
@@ -210,14 +231,23 @@ async def call_next_patient(doctor_id: str, db = Depends(get_db)):
     # Update current token
     await db["queues"].update_one(
         {"_id": queue["_id"]},
-        {"$set": {"current_token": new_token, "updated_at": datetime.utcnow()}}
+        {"$set": {"current_token": new_token, "updated_at": get_ist_now()}}
     )
     
     # Update entry status
-    await db["queue_entries"].update_one(
+    called_entry = await db["queue_entries"].find_one_and_update(
         {"queue_id": str(queue["_id"]), "token_number": new_token},
-        {"$set": {"status": "CALLED", "updated_at": datetime.utcnow()}}
+        {"$set": {"status": "CALLED", "updated_at": get_ist_now()}}
     )
+    if called_entry and "patient_id" in called_entry:
+        await db["appointments"].update_one(
+            {
+                "doctor_id": doctor_id,
+                "patient_id": called_entry["patient_id"],
+                "status": {"$in": ["BOOKED", "WAITING"]}
+            },
+            {"$set": {"status": "IN_PROGRESS", "updated_at": get_ist_now()}}
+        )
     
     # Broadcast update
     await manager.broadcast_queue_update(doctor_id, {

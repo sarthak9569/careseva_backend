@@ -3,7 +3,9 @@ from typing import List
 from models.hospital import DepartmentCreate, DepartmentUpdate, DepartmentResponse, DepartmentInDB, DoctorCreate, DoctorUpdate, DoctorResponse, DoctorInDB
 from database import get_db
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 router = APIRouter()
 
@@ -13,7 +15,7 @@ async def create_department(hospital_id: str, department: DepartmentCreate, db =
         **department.dict(),
         id="",
         hospital_id=hospital_id,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(IST)
     )
     
     db_dict = db_dept.dict(exclude={"id"})
@@ -73,7 +75,7 @@ async def create_doctor(hospital_id: str, doctor: DoctorCreate, db = Depends(get
         **doctor_data,
         id="",
         hospital_id=hospital_id,
-        created_at=datetime.utcnow()
+        created_at=datetime.now(IST)
     )
     
     db_dict = db_doc.dict(exclude={"id"})
@@ -146,8 +148,8 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
     unique_patients = await unique_patients_cursor.to_list(length=10000)
     total_patients = len(unique_patients)
     
-    # 2. Appointments Today
-    today_start_str = datetime.utcnow().strftime("%Y-%m-%d")
+    # 2. Appointments Today in IST
+    today_start_str = datetime.now(IST).strftime("%Y-%m-%d")
     appointments_today_count = await db["appointments"].count_documents({
         "hospital_id": hospital_id,
         "appointment_date": today_start_str
