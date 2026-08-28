@@ -14,6 +14,8 @@ class PatientBase(BaseModel):
     last_visit: Optional[str] = None # YYYY-MM-DD
     registration_source: str = "DIRECT_WALKIN" # DIRECT_WALKIN or CARESEVA_APP
     hospital_id: str
+    appointment_id: Optional[str] = None
+    token_number: Optional[int] = None
 
 class PatientCreate(BaseModel):
     name: str
