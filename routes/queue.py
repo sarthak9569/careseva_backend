@@ -48,8 +48,16 @@ async def websocket_endpoint(websocket: WebSocket, doctor_id: str):
     try:
         while True:
             data = await websocket.receive_text()
-            # We mostly just push data from server, but client could send pings
-    except WebSocketDisconnect:
+            if data:
+                try:
+                    msg = json.loads(data)
+                    if msg.get("action") == "ping" or msg.get("event") == "ping":
+                        await websocket.send_text(json.dumps({"event": "pong"}))
+                except Exception:
+                    # If raw string ping
+                    if data.strip().lower() == "ping":
+                        await websocket.send_text(json.dumps({"event": "pong"}))
+    except (WebSocketDisconnect, Exception):
         manager.disconnect(websocket, doctor_id)
 
 @router.post("/join", response_model=QueueEntryResponse)
