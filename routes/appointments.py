@@ -67,8 +67,24 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
         payment_status = appt_data.get("payment_status", "DONE")
         payment_option = appt_data.get("payment_option", "full")
         total_fee = float(appt_data.get("total_fee") or 500.0)
-        paid_amount = float(appt_data.get("paid_amount") or 500.0)
+        if total_fee <= 0:
+            total_fee = 500.0
+        paid_amount = float(appt_data.get("paid_amount") or 0.0)
+        if paid_amount <= 0:
+            paid_amount = total_fee if payment_status == "DONE" else (total_fee * 0.2)
         remaining_amount = float(appt_data.get("remaining_amount") or 0.0)
+        if remaining_amount <= 0 and payment_status != "DONE":
+            remaining_amount = total_fee - paid_amount
+
+        # Also ensure the appointment record has these non-zero numbers
+        await db["appointments"].update_one(
+            {"_id": ObjectId(appt_id)},
+            {"$set": {
+                "total_fee": total_fee,
+                "paid_amount": paid_amount,
+                "remaining_amount": remaining_amount
+            }}
+        )
 
         if not existing_patient:
             from core.pid_generator import generate_unique_pid
