@@ -86,6 +86,27 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
             doctor_id = str(doctor["_id"]) if doctor else "walkin_doctor"
             doctor_name = doctor.get("name") if doctor else "Duty Doctor"
 
+            # Parse fee from doctor or input
+            raw_fee = data.get("total_fee") or (doctor.get("consultation_fee") if doctor else 500.0) or 500.0
+            total_fee = float(raw_fee)
+            payment_status = data.get("payment_status") or "DONE"
+            paid_amount = total_fee if payment_status == "DONE" else (total_fee * 0.2)
+            remaining_amount = 0.0 if payment_status == "DONE" else (total_fee * 0.8)
+
+            db_dict["total_fee"] = total_fee
+            db_dict["payment_status"] = payment_status
+            db_dict["paid_amount"] = paid_amount
+            db_dict["remaining_amount"] = remaining_amount
+            await db["patients"].update_one(
+                {"_id": ObjectId(db_dict["id"])},
+                {"$set": {
+                    "total_fee": total_fee,
+                    "payment_status": payment_status,
+                    "paid_amount": paid_amount,
+                    "remaining_amount": remaining_amount
+                }}
+            )
+
             # 1. Create Appointment
             appointment_date = now_ist.strftime("%Y-%m-%d")
             appt_dict = {
@@ -103,6 +124,11 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
                 "appointment_date": appointment_date,
                 "status": "BOOKED",
                 "booking_source": "DIRECT_WALKIN",
+                "payment_status": payment_status,
+                "payment_option": "full" if payment_status == "DONE" else "advance",
+                "total_fee": total_fee,
+                "paid_amount": paid_amount,
+                "remaining_amount": remaining_amount,
                 "created_at": now_ist,
                 "updated_at": now_ist
             }
@@ -170,6 +196,53 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
             print(f"Error auto-queuing patient into department: {e}")
 
     return PatientResponse(**db_dict)
+
+@router.patch("/{patient_id}/complete-payment", response_model=PatientResponse)
+async def complete_patient_payment(patient_id: str, db = Depends(get_db)):
+    """Counter fee settlement: Marks remaining 80% fee as paid and updates status to DONE."""
+    query = {}
+    try:
+        query = {"_id": ObjectId(patient_id)}
+    except Exception:
+        query = {"pid": patient_id}
+
+    patient = await db["patients"].find_one(query)
+    if not patient and "pid" not in query:
+        patient = await db["patients"].find_one({"pid": patient_id})
+
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    total_fee = float(patient.get("total_fee") or 500.0)
+    now_ist = datetime.now(IST)
+
+    update_fields = {
+        "payment_status": "DONE",
+        "paid_amount": total_fee,
+        "remaining_amount": 0.0,
+        "updated_at": now_ist
+    }
+
+    await db["patients"].update_one({"_id": patient["_id"]}, {"$set": update_fields})
+
+    # If linked appointment exists, also update appointment payment_status to DONE
+    if patient.get("appointment_id"):
+        try:
+            await db["appointments"].update_one(
+                {"_id": ObjectId(patient["appointment_id"])},
+                {"$set": {
+                    "payment_status": "DONE",
+                    "paid_amount": total_fee,
+                    "remaining_amount": 0.0,
+                    "updated_at": now_ist
+                }}
+            )
+        except Exception:
+            pass
+
+    updated = await db["patients"].find_one({"_id": patient["_id"]})
+    updated["id"] = str(updated["_id"])
+    return PatientResponse(**updated)
 
 @router.get("/hospital/{hospital_id}", response_model=List[PatientResponse])
 async def get_hospital_patients(hospital_id: str, search: Optional[str] = None, db = Depends(get_db)):

@@ -16,6 +16,11 @@ class PatientBase(BaseModel):
     hospital_id: str
     appointment_id: Optional[str] = None
     token_number: Optional[int] = None
+    payment_status: str = "DONE" # DONE or PENDING
+    payment_option: Optional[str] = "full" # full or advance
+    total_fee: Optional[float] = 500.0
+    paid_amount: Optional[float] = 500.0
+    remaining_amount: Optional[float] = 0.0
 
 class PatientCreate(BaseModel):
     name: str
@@ -28,6 +33,11 @@ class PatientCreate(BaseModel):
     last_visit: Optional[str] = None
     registration_source: str = "DIRECT_WALKIN"
     hospital_id: str
+    payment_status: Optional[str] = "DONE"
+    payment_option: Optional[str] = "full"
+    total_fee: Optional[float] = 500.0
+    paid_amount: Optional[float] = 500.0
+    remaining_amount: Optional[float] = 0.0
 
 class PatientInDB(PatientBase):
     id: str

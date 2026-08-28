@@ -70,6 +70,11 @@ class AppointmentBase(BaseModel):
     booking_source: str = "CARESEVA_APP" # 'CARESEVA_APP' or 'HMS_DIRECT'
     department_name: Optional[str] = None
     doctor_name: Optional[str] = None
+    payment_status: str = "DONE" # DONE or PENDING
+    payment_option: Optional[str] = "full" # full or advance
+    total_fee: Optional[float] = 500.0
+    paid_amount: Optional[float] = 500.0
+    remaining_amount: Optional[float] = 0.0
 
 class AppointmentCreate(AppointmentBase):
     pass

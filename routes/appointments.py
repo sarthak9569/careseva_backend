@@ -64,6 +64,12 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
                 "name": patient_name
             })
 
+        payment_status = appt_data.get("payment_status", "DONE")
+        payment_option = appt_data.get("payment_option", "full")
+        total_fee = float(appt_data.get("total_fee") or 500.0)
+        paid_amount = float(appt_data.get("paid_amount") or 500.0)
+        remaining_amount = float(appt_data.get("remaining_amount") or 0.0)
+
         if not existing_patient:
             from core.pid_generator import generate_unique_pid
             new_pid = await generate_unique_pid(db)
@@ -78,6 +84,12 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
                 "last_visit": now_ist.strftime("%Y-%m-%d"),
                 "registration_source": appt_data.get("booking_source", "CARESEVA_APP"),
                 "hospital_id": hospital_id,
+                "appointment_id": appt_id,
+                "payment_status": payment_status,
+                "payment_option": payment_option,
+                "total_fee": total_fee,
+                "paid_amount": paid_amount,
+                "remaining_amount": remaining_amount,
                 "created_at": now_ist,
                 "updated_at": now_ist
             })
@@ -88,6 +100,12 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
                     "last_visit": now_ist.strftime("%Y-%m-%d"),
                     "department_id": department_id,
                     "department_name": appt_data.get("department_name", existing_patient.get("department_name", "General")),
+                    "appointment_id": appt_id,
+                    "payment_status": payment_status,
+                    "payment_option": payment_option,
+                    "total_fee": total_fee,
+                    "paid_amount": paid_amount,
+                    "remaining_amount": remaining_amount,
                     "updated_at": now_ist
                 }}
             )
