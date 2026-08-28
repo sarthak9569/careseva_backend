@@ -48,6 +48,51 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
     department_id = appointment.department_id
     patient_id = appointment.patient_id
     patient_name = appointment.patient_name or "Unknown Patient"
+    patient_phone = appointment.patient_phone or ""
+
+    # Ensure patient is recorded in central patients registry with a PID
+    try:
+        existing_patient = None
+        if patient_phone:
+            existing_patient = await db["patients"].find_one({
+                "hospital_id": hospital_id,
+                "phone": patient_phone
+            })
+        if not existing_patient and patient_name:
+            existing_patient = await db["patients"].find_one({
+                "hospital_id": hospital_id,
+                "name": patient_name
+            })
+
+        if not existing_patient:
+            from core.pid_generator import generate_unique_pid
+            new_pid = await generate_unique_pid(db)
+            await db["patients"].insert_one({
+                "pid": new_pid,
+                "name": patient_name,
+                "phone": patient_phone,
+                "age": appointment.patient_age or 0,
+                "gender": appointment.patient_gender or "-",
+                "department_id": department_id,
+                "department_name": appt_data.get("department_name", "General"),
+                "last_visit": now_ist.strftime("%Y-%m-%d"),
+                "registration_source": appt_data.get("booking_source", "CARESEVA_APP"),
+                "hospital_id": hospital_id,
+                "created_at": now_ist,
+                "updated_at": now_ist
+            })
+        else:
+            await db["patients"].update_one(
+                {"_id": existing_patient["_id"]},
+                {"$set": {
+                    "last_visit": now_ist.strftime("%Y-%m-%d"),
+                    "department_id": department_id,
+                    "department_name": appt_data.get("department_name", existing_patient.get("department_name", "General")),
+                    "updated_at": now_ist
+                }}
+            )
+    except Exception as e:
+        print(f"Error syncing patient to registry: {e}")
 
     queue = await db["queues"].find_one({
         "hospital_id": hospital_id,
