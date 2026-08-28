@@ -67,6 +67,9 @@ class AppointmentBase(BaseModel):
     patient_phone: Optional[str] = None
     appointment_date: str # YYYY-MM-DD
     status: str = "BOOKED" # BOOKED, COMPLETED, CANCELLED
+    booking_source: str = "CARESEVA_APP" # 'CARESEVA_APP' or 'HMS_DIRECT'
+    department_name: Optional[str] = None
+    doctor_name: Optional[str] = None
 
 class AppointmentCreate(AppointmentBase):
     pass

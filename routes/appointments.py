@@ -152,9 +152,23 @@ async def get_hospital_appointments(
     cursor = db["appointments"].find(query).sort("created_at", -1)
     appointments = await cursor.to_list(length=300)
     
+    # Pre-fetch department mapping for quick lookup
+    dept_cursor = db["departments"].find({"hospital_id": hospital_id})
+    departments = await dept_cursor.to_list(length=100)
+    dept_map = {str(d["_id"]): d.get("name", "General") for d in departments}
+
     result = []
     for a in appointments:
         a["id"] = str(a["_id"])
+        dept_id = a.get("department_id")
+        if dept_id and str(dept_id) in dept_map:
+            a["department_name"] = dept_map[str(dept_id)]
+        elif not a.get("department_name"):
+            a["department_name"] = "General"
+
+        if not a.get("booking_source"):
+            a["booking_source"] = "CARESEVA_APP"
+
         result.append(AppointmentResponse(**a))
     return result
 
