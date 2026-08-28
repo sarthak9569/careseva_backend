@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from core.config import settings
 from database import connect_to_mongo, close_mongo_connection, get_db
-from routes import auth, hospitals, admin, hospital_management, queue, appointments
+from routes import auth, hospitals, admin, hospital_management, queue, appointments, patients
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
@@ -21,6 +21,7 @@ app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 app.include_router(hospital_management.router, prefix="/api/management", tags=["hospital_management"])
 app.include_router(queue.router, prefix="/api/queue", tags=["queue"])
 app.include_router(appointments.router, prefix="/api/appointments", tags=["appointments"])
+app.include_router(patients.router, prefix="/api/patients", tags=["patients"])
 
 @app.on_event("startup")
 async def startup_db_client():

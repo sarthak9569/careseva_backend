@@ -25,6 +25,7 @@ class UserInDB(BaseModel):
     email: EmailStr
     hashed_password: str
     role: str
+    pid: Optional[str] = None
     hospital_name: Optional[str] = None
     hospital_code: Optional[str] = None
     hospital_id: Optional[str] = None
@@ -38,4 +39,5 @@ class UserResponse(BaseModel):
     name: str
     email: EmailStr
     role: str
+    pid: Optional[str] = None
     hospital_id: Optional[str] = None

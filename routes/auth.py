@@ -37,6 +37,29 @@ async def register(user: UserCreate, db = Depends(get_db)):
         del user_dict["password"]
         user_dict["hashed_password"] = hashed_password
         
+        # Generate unique PID if role is patient
+        from core.pid_generator import generate_unique_pid
+        from datetime import datetime, timezone, timedelta
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(IST)
+
+        unique_pid = None
+        if user.role == "patient":
+            unique_pid = await generate_unique_pid(db)
+            user_dict["pid"] = unique_pid
+            
+            # Sync to central patients registry
+            await db["patients"].insert_one({
+                "pid": unique_pid,
+                "name": user.name,
+                "email": user.email,
+                "phone": user_dict.get("phone", ""),
+                "registration_source": "CARESEVA_APP",
+                "hospital_id": user_dict.get("hospital_id", "6a8ea49ef17ddb14088aa5f7"),
+                "created_at": now_ist,
+                "updated_at": now_ist
+            })
+
         # Create the db model
         db_user = UserInDB(**user_dict)
         
@@ -49,6 +72,7 @@ async def register(user: UserCreate, db = Depends(get_db)):
             name=user.name,
             email=user.email,
             role=user.role,
+            pid=unique_pid,
             hospital_id=user_dict.get("hospital_id")
         )
     except Exception as e:
