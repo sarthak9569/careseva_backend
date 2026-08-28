@@ -197,61 +197,57 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
         "recent_appointments": recent_list
     }
 
+import asyncio
+
 @router.get("/{hospital_id}/department-overview")
 async def get_departments_live_overview(hospital_id: str, db = Depends(get_db)):
     dept_cursor = db["departments"].find({"hospital_id": hospital_id})
     departments = await dept_cursor.to_list(length=100)
     
-    result = []
-    for d in departments:
+    if not departments:
+        return []
+
+    async def fetch_dept_stats(d):
         dept_id = str(d["_id"])
         
-        # 1. Total bookings for this department
-        total_bookings = await db["appointments"].count_documents({
+        t_bookings = db["appointments"].count_documents({
             "hospital_id": hospital_id,
             "department_id": dept_id
         })
-        
-        # 2. Ongoing queue entries (WAITING, CALLED, IN_CONSULTATION)
-        ongoing_queue = await db["queue_entries"].count_documents({
+        t_ongoing_qe = db["queue_entries"].count_documents({
             "hospital_id": hospital_id,
             "department_id": dept_id,
             "status": {"$in": ["WAITING", "CALLED", "IN_CONSULTATION"]}
         })
-        
-        # If no entries by department_id, check by queue doctor_id or appointments
-        if ongoing_queue == 0:
-            ongoing_appts = await db["appointments"].count_documents({
-                "hospital_id": hospital_id,
-                "department_id": dept_id,
-                "status": {"$in": ["BOOKED", "WAITING", "IN_PROGRESS", "CALLED"]}
-            })
-            ongoing_queue = ongoing_appts
-            
-        # 3. Completed appointments
-        completed_count = await db["appointments"].count_documents({
+        t_ongoing_appts = db["appointments"].count_documents({
+            "hospital_id": hospital_id,
+            "department_id": dept_id,
+            "status": {"$in": ["BOOKED", "WAITING", "IN_PROGRESS", "CALLED"]}
+        })
+        t_completed = db["appointments"].count_documents({
             "hospital_id": hospital_id,
             "department_id": dept_id,
             "status": "COMPLETED"
         })
-        
-        # 4. Cancelled count
-        cancelled_count = await db["appointments"].count_documents({
+        t_cancelled = db["appointments"].count_documents({
             "hospital_id": hospital_id,
             "department_id": dept_id,
             "status": "CANCELLED"
         })
-        
-        # 5. Active doctors in this department
-        doc_cursor = db["doctors"].find({
+        t_docs = db["doctors"].find({
             "hospital_id": hospital_id,
             "department_id": dept_id,
             "status": "ACTIVE"
-        })
-        doctors_list = await doc_cursor.to_list(length=50)
+        }).to_list(length=50)
+
+        total_bookings, ongoing_qe, ongoing_appts, completed_count, cancelled_count, doctors_list = await asyncio.gather(
+            t_bookings, t_ongoing_qe, t_ongoing_appts, t_completed, t_cancelled, t_docs
+        )
+
+        ongoing_queue = ongoing_qe if ongoing_qe > 0 else ongoing_appts
         doctor_summaries = [{"id": str(doc["_id"]), "name": doc["name"], "specialization": doc.get("specialization", "")} for doc in doctors_list]
-        
-        result.append({
+
+        return {
             "id": dept_id,
             "name": d.get("name", "General"),
             "specialty": d.get("specialty", ""),
@@ -263,7 +259,9 @@ async def get_departments_live_overview(hospital_id: str, db = Depends(get_db)):
             "cancelled_count": cancelled_count,
             "active_doctors_count": len(doctor_summaries),
             "doctors": doctor_summaries
-        })
-        
+        }
+
+    tasks = [fetch_dept_stats(d) for d in departments]
+    result = await asyncio.gather(*tasks)
     return result
 
