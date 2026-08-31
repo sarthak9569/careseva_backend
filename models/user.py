@@ -7,6 +7,9 @@ class UserCreate(BaseModel):
     password: str
     role: str = "patient" # 'patient', 'hospital_admin', 'doctor'
     phone: Optional[str] = None
+    dob: Optional[str] = None
+    age: Optional[int] = None
+    blood_group: Optional[str] = None
     
     # Optional hospital fields if role is 'hospital_admin'
     hospital_name: Optional[str] = None
@@ -28,6 +31,9 @@ class UserInDB(BaseModel):
     role: str
     phone: Optional[str] = None
     pid: Optional[str] = None
+    dob: Optional[str] = None
+    age: Optional[int] = None
+    blood_group: Optional[str] = None
     hospital_name: Optional[str] = None
     hospital_code: Optional[str] = None
     hospital_id: Optional[str] = None
@@ -43,4 +49,7 @@ class UserResponse(BaseModel):
     role: str
     phone: Optional[str] = None
     pid: Optional[str] = None
+    dob: Optional[str] = None
+    age: Optional[int] = None
+    blood_group: Optional[str] = None
     hospital_id: Optional[str] = None

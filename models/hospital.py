@@ -57,6 +57,7 @@ class DepartmentBase(BaseModel):
     name: str
     specialty: str
     description: Optional[str] = None
+    consultation_fee: float = 0.0
     status: str = "ACTIVE"
 
 class DepartmentCreate(DepartmentBase):
@@ -66,6 +67,7 @@ class DepartmentUpdate(BaseModel):
     name: Optional[str] = None
     specialty: Optional[str] = None
     description: Optional[str] = None
+    consultation_fee: Optional[float] = None
     status: Optional[str] = None
 
 class DepartmentInDB(DepartmentBase):
@@ -76,6 +78,7 @@ class DepartmentInDB(DepartmentBase):
 class DepartmentResponse(DepartmentBase):
     id: str
     hospital_id: str
+    doctor_count: int = 0
 
 # Doctor Models
 class DoctorBase(BaseModel):

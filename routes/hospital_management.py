@@ -31,7 +31,14 @@ async def get_departments(hospital_id: str, db = Depends(get_db)):
     
     result = []
     for d in departments:
-        d["id"] = str(d["_id"])
+        dept_id_str = str(d["_id"])
+        d["id"] = dept_id_str
+        doc_count = await db["doctors"].count_documents({
+            "hospital_id": hospital_id,
+            "department_id": dept_id_str,
+            "status": "ACTIVE"
+        })
+        d["doctor_count"] = doc_count
         result.append(DepartmentResponse(**d))
     return result
 
