@@ -110,21 +110,37 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
                 "updated_at": now_ist
             })
         else:
+            update_data = {
+                "last_visit": now_ist.strftime("%Y-%m-%d"),
+                "department_id": department_id,
+                "department_name": appt_data.get("department_name", existing_patient.get("department_name", "General")),
+                "appointment_id": appt_id,
+                "payment_status": payment_status,
+                "payment_option": payment_option,
+                "total_fee": total_fee,
+                "paid_amount": paid_amount,
+                "remaining_amount": remaining_amount,
+                "registration_source": appt_data.get("booking_source", existing_patient.get("registration_source", "CARESEVA_APP")),
+                "updated_at": now_ist
+            }
+            if patient_name and patient_name.strip() and patient_name.strip().lower() != "unknown patient":
+                update_data["name"] = patient_name.strip()
+            if appointment.patient_age:
+                update_data["age"] = appointment.patient_age
+            if appointment.patient_gender and appointment.patient_gender != "-":
+                update_data["gender"] = appointment.patient_gender
+
             await db["patients"].update_one(
                 {"_id": existing_patient["_id"]},
-                {"$set": {
-                    "last_visit": now_ist.strftime("%Y-%m-%d"),
-                    "department_id": department_id,
-                    "department_name": appt_data.get("department_name", existing_patient.get("department_name", "General")),
-                    "appointment_id": appt_id,
-                    "payment_status": payment_status,
-                    "payment_option": payment_option,
-                    "total_fee": total_fee,
-                    "paid_amount": paid_amount,
-                    "remaining_amount": remaining_amount,
-                    "updated_at": now_ist
-                }}
+                {"$set": update_data}
             )
+
+            # Link patient PID to appointment record if present
+            if existing_patient.get("pid"):
+                await db["appointments"].update_one(
+                    {"_id": ObjectId(appt_id)},
+                    {"$set": {"patient_id": existing_patient["pid"]}}
+                )
     except Exception as e:
         print(f"Error syncing patient to registry: {e}")
 

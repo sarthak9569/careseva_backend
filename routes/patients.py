@@ -256,8 +256,8 @@ async def get_hospital_patients(hospital_id: str, search: Optional[str] = None, 
             {"department_name": {"$regex": s, "$options": "i"}}
         ]
 
-    # Sorted strictly by created_at descending (timestamp order to help maintain queue)
-    cursor = db["patients"].find(query).sort("created_at", -1)
+    # Sorted by most recent activity/visit (updated_at) descending, falling back to created_at
+    cursor = db["patients"].find(query).sort([("updated_at", -1), ("created_at", -1)])
     patients = await cursor.to_list(length=500)
 
     result = []
