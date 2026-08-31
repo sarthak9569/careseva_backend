@@ -203,6 +203,74 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
 
     return AppointmentResponse(**db_dict)
 
+@router.get("/patient/my-appointments")
+async def get_patient_appointments(
+    patient_id: Optional[str] = None,
+    phone: Optional[str] = None,
+    db = Depends(get_db)
+):
+    """Retrieve all past and upcoming appointments for a patient with detailed metadata."""
+    conditions = []
+    if patient_id and patient_id != "dummy_patient_123":
+        conditions.append({"patient_id": patient_id})
+    if phone:
+        clean_p = phone.strip().replace(" ", "").replace("-", "")
+        if clean_p.startswith("+91"):
+            clean_p = clean_p[3:]
+        conditions.append({"patient_phone": clean_p})
+        conditions.append({"patient_phone": phone})
+        try:
+            pt = await db["patients"].find_one({"phone": clean_p})
+            if pt and pt.get("pid"):
+                conditions.append({"patient_id": pt["pid"]})
+        except Exception:
+            pass
+
+    query = {}
+    if conditions:
+        query["$or"] = conditions
+
+    cursor = db["appointments"].find(query).sort("created_at", -1)
+    appointments = await cursor.to_list(length=100)
+
+    # Pre-fetch doctor mapping
+    doc_cursor = db["doctors"].find({})
+    doctors = await doc_cursor.to_list(length=100)
+    doc_map = {str(d["_id"]): d.get("name", "Doctor") for d in doctors}
+
+    # Pre-fetch department mapping
+    dept_cursor = db["departments"].find({})
+    departments = await dept_cursor.to_list(length=100)
+    dept_map = {str(d["_id"]): d.get("name", "General") for d in departments}
+
+    result = []
+    for a in appointments:
+        for k, v in list(a.items()):
+            if isinstance(v, ObjectId):
+                a[k] = str(v)
+
+        doc_id = a.get("doctor_id")
+        if doc_id and str(doc_id) in doc_map and not a.get("doctor_name"):
+            a["doctor_name"] = doc_map[str(doc_id)]
+        dept_id = a.get("department_id")
+        if dept_id and str(dept_id) in dept_map and not a.get("department_name"):
+            a["department_name"] = dept_map[str(dept_id)]
+
+        entry = await db["queue_entries"].find_one({"appointment_id": a.get("id")})
+        if entry:
+            a["token_number"] = entry.get("token_number")
+            if entry.get("status"):
+                a["queue_status"] = entry.get("status")
+
+        if a.get("created_at") and isinstance(a["created_at"], datetime):
+            a["created_at"] = a["created_at"].isoformat()
+        if a.get("updated_at") and isinstance(a["updated_at"], datetime):
+            a["updated_at"] = a["updated_at"].isoformat()
+
+        result.append(a)
+
+    return result
+
 @router.get("/hospital/{hospital_id}", response_model=List[AppointmentResponse])
 async def get_hospital_appointments(
     hospital_id: str, 
