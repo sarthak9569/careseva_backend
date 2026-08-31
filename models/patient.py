@@ -6,9 +6,12 @@ class PatientBase(BaseModel):
     pid: Optional[str] = None # Unique Patient ID: CS-P-10001
     name: str
     dob: Optional[str] = None # YYYY-MM-DD
-    age: int
-    gender: str # Male, Female, Other
+    age: Optional[int] = 0
+    gender: Optional[str] = "-" # Male, Female, Other
     phone: str
+    email: Optional[str] = None
+    blood_group: Optional[str] = None
+    address: Optional[str] = None
     department_id: Optional[str] = None
     department_name: Optional[str] = None
     last_visit: Optional[str] = None # YYYY-MM-DD
@@ -28,6 +31,9 @@ class PatientCreate(BaseModel):
     age: Optional[int] = None
     gender: str
     phone: str
+    email: Optional[str] = None
+    blood_group: Optional[str] = None
+    address: Optional[str] = None
     department_id: Optional[str] = None
     department_name: Optional[str] = None
     last_visit: Optional[str] = None
