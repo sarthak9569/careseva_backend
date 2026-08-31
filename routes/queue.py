@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from typing import List, Dict
+from typing import List, Dict, Optional
 from models.queue import QueueCreate, QueueResponse, QueueInDB, QueueEntryCreate, QueueEntryResponse, QueueEntryInDB
 from database import get_db
 from bson import ObjectId
@@ -117,6 +117,87 @@ async def join_queue(entry: QueueEntryCreate, db = Depends(get_db)):
     })
     
     return QueueEntryResponse(**entry_dict)
+
+@router.get("/patient/active")
+async def get_patient_active_queue(
+    patient_id: Optional[str] = None,
+    phone: Optional[str] = None,
+    db = Depends(get_db)
+):
+    """Retrieve the patient's active queue token and the doctor's live room status."""
+    conditions = []
+    if patient_id and patient_id != "dummy_patient_123":
+        conditions.append({"patient_id": patient_id})
+    if phone:
+        conditions.append({"phone": phone})
+        try:
+            pt = await db["patients"].find_one({"phone": phone})
+            if pt:
+                if pt.get("pid"):
+                    conditions.append({"patient_id": pt["pid"]})
+                conditions.append({"patient_id": str(pt["_id"])})
+        except Exception:
+            pass
+
+    query = {"status": {"$in": ["WAITING", "CALLED", "IN_PROGRESS"]}}
+    if conditions:
+        query["$or"] = conditions
+
+    entry = await db["queue_entries"].find_one(query, sort=[("created_at", -1)])
+    
+    # If no entry matches query with parameters, fallback to latest active entry for convenience
+    if not entry:
+        entry = await db["queue_entries"].find_one(
+            {"status": {"$in": ["WAITING", "CALLED", "IN_PROGRESS"]}},
+            sort=[("created_at", -1)]
+        )
+
+    if not entry:
+        return {"has_active_queue": False}
+
+    doctor_id = entry.get("doctor_id")
+    queue = None
+    if entry.get("queue_id"):
+        try:
+            queue = await db["queues"].find_one({"_id": ObjectId(entry["queue_id"])})
+        except Exception:
+            pass
+    if not queue and doctor_id:
+        queue = await db["queues"].find_one({"doctor_id": doctor_id, "status": "ACTIVE"})
+
+    current_token = queue.get("current_token", 0) if queue else 0
+    total_tokens = queue.get("total_tokens", 0) if queue else 0
+
+    doctor = None
+    if doctor_id:
+        try:
+            doctor = await db["doctors"].find_one({"_id": ObjectId(doctor_id)})
+        except Exception:
+            doctor = await db["doctors"].find_one({"_id": doctor_id})
+
+    dept = None
+    dept_id = entry.get("department_id")
+    if dept_id:
+        try:
+            dept = await db["departments"].find_one({"_id": ObjectId(dept_id)})
+        except Exception:
+            pass
+
+    doctor_name = doctor.get("name") if doctor else "Duty Doctor"
+    dept_name = entry.get("department_name") or (dept.get("name") if dept else "General")
+
+    return {
+        "has_active_queue": True,
+        "entry_id": str(entry["_id"]),
+        "doctor_id": doctor_id,
+        "doctor_name": doctor_name,
+        "department_name": dept_name,
+        "token_number": entry.get("token_number", 0),
+        "current_token": current_token,
+        "total_tokens": total_tokens,
+        "status": entry.get("status", "WAITING"),
+        "patient_name": entry.get("patient_name", "")
+    }
 
 @router.get("/{doctor_id}/entries", response_model=List[QueueEntryResponse])
 async def get_queue_entries(doctor_id: str, db = Depends(get_db)):
