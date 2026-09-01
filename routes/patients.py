@@ -246,59 +246,8 @@ async def complete_patient_payment(patient_id: str, db = Depends(get_db)):
 
 @router.get("/hospital/{hospital_id}", response_model=List[PatientResponse])
 async def get_hospital_patients(hospital_id: str, search: Optional[str] = None, db = Depends(get_db)):
-    """Fetch all patients for a hospital with automatic consolidation from appointments."""
+    """Fetch all patients for a hospital with fast batch queries and optimized consolidation."""
     now_ist = get_ist_now()
-
-    # 1. Automatic Consolidation: Sync any appointment whose patient is missing from patients collection
-    try:
-        appts = await db["appointments"].find({"hospital_id": hospital_id}).to_list(200)
-        for a in appts:
-            phone = a.get("patient_phone")
-            name = a.get("patient_name")
-            appt_id = str(a.get("_id"))
-            
-            p = None
-            if phone:
-                p = await db["patients"].find_one({"hospital_id": hospital_id, "phone": phone})
-            if not p and name:
-                p = await db["patients"].find_one({"hospital_id": hospital_id, "name": name})
-
-            if not p:
-                pid = a.get("patient_id")
-                if not pid or not pid.startswith("CS-P-"):
-                    pid = await generate_unique_pid(db)
-                
-                # Fetch user details if available
-                user = None
-                if phone:
-                    user = await db["users"].find_one({"phone": phone})
-
-                new_p = {
-                    "pid": pid,
-                    "name": name or "Unknown Patient",
-                    "phone": phone or "",
-                    "email": user.get("email") if user else None,
-                    "blood_group": user.get("blood_group") if user else None,
-                    "dob": user.get("dob") if user else None,
-                    "age": a.get("patient_age") or (user.get("age") if user else 0),
-                    "gender": a.get("patient_gender") or (user.get("gender") if user else "-"),
-                    "department_id": a.get("department_id"),
-                    "department_name": a.get("department_name") or "General",
-                    "last_visit": a.get("appointment_date") or now_ist.strftime("%Y-%m-%d"),
-                    "registration_source": a.get("booking_source") or "CARESEVA_APP",
-                    "hospital_id": hospital_id,
-                    "appointment_id": appt_id,
-                    "payment_status": a.get("payment_status") or "DONE",
-                    "payment_option": a.get("payment_option") or "full",
-                    "total_fee": float(a.get("total_fee") or 500.0),
-                    "paid_amount": float(a.get("paid_amount") or 500.0),
-                    "remaining_amount": float(a.get("remaining_amount") or 0.0),
-                    "created_at": a.get("created_at") or now_ist,
-                    "updated_at": a.get("updated_at") or now_ist
-                }
-                await db["patients"].insert_one(new_p)
-    except Exception as e:
-        print(f"Error during automatic appointment patient sync: {e}")
 
     query = {"hospital_id": hospital_id}
     if search:
@@ -314,53 +263,130 @@ async def get_hospital_patients(hospital_id: str, search: Optional[str] = None, 
     cursor = db["patients"].find(query).sort([("updated_at", -1), ("created_at", -1)])
     patients = await cursor.to_list(length=500)
 
+    # If patients collection is empty for this hospital, do an automatic initial sync from appointments
+    if not patients and not search:
+        try:
+            appts = await db["appointments"].find({"hospital_id": hospital_id}).to_list(100)
+            for a in appts:
+                phone = a.get("patient_phone")
+                name = a.get("patient_name")
+                appt_id = str(a.get("_id"))
+                
+                pid = a.get("patient_id")
+                if not pid or not pid.startswith("CS-P-"):
+                    pid = await generate_unique_pid(db)
+
+                new_p = {
+                    "pid": pid,
+                    "name": name or "Unknown Patient",
+                    "phone": phone or "",
+                    "email": None,
+                    "blood_group": None,
+                    "dob": None,
+                    "age": a.get("patient_age") or 0,
+                    "gender": a.get("patient_gender") or "-",
+                    "department_id": a.get("department_id"),
+                    "department_name": a.get("department_name") or "General",
+                    "last_visit": a.get("appointment_date") or now_ist.strftime("%Y-%m-%d"),
+                    "registration_source": a.get("booking_source") or "CARESEVA_APP",
+                    "hospital_id": hospital_id,
+                    "appointment_id": appt_id,
+                    "payment_status": a.get("payment_status") or "DONE",
+                    "payment_option": a.get("payment_option") or "full",
+                    "total_fee": float(a.get("total_fee") or 500.0),
+                    "paid_amount": float(a.get("paid_amount") or 500.0),
+                    "remaining_amount": float(a.get("remaining_amount") or 0.0),
+                    "created_at": a.get("created_at") or now_ist,
+                    "updated_at": a.get("updated_at") or now_ist
+                }
+                await db["patients"].insert_one(new_p)
+
+            cursor = db["patients"].find(query).sort([("updated_at", -1), ("created_at", -1)])
+            patients = await cursor.to_list(length=500)
+        except Exception as e:
+            print(f"Error during automatic appointment patient sync: {e}")
+
+    # Fast batch enrichment of user profiles (dob, age, blood_group) in a single query
+    phones_to_check = list({
+        p["phone"] for p in patients 
+        if p.get("phone") and (not p.get("blood_group") or not p.get("dob") or not p.get("age"))
+    })
+    if phones_to_check:
+        try:
+            users = await db["users"].find({"phone": {"$in": phones_to_check}}).to_list(len(phones_to_check))
+            users_by_phone = {u["phone"]: u for u in users if u.get("phone")}
+            for p in patients:
+                user = users_by_phone.get(p.get("phone"))
+                if user:
+                    if not p.get("blood_group") and user.get("blood_group"):
+                        p["blood_group"] = user.get("blood_group")
+                    if not p.get("dob") and user.get("dob"):
+                        p["dob"] = user.get("dob")
+                    if (not p.get("age") or p.get("age") == 0) and user.get("age"):
+                        p["age"] = user.get("age")
+        except Exception as e:
+            print(f"Error during batch user enrichment: {e}")
+
     result = []
     for p in patients:
         p["id"] = str(p["_id"])
-        # Ensure dob, age, blood_group are populated
-        if (not p.get("blood_group") or not p.get("dob")) and p.get("phone"):
-            user = await db["users"].find_one({"phone": p["phone"]})
-            if user:
-                if not p.get("blood_group") and user.get("blood_group"):
-                    p["blood_group"] = user.get("blood_group")
-                if not p.get("dob") and user.get("dob"):
-                    p["dob"] = user.get("dob")
-                if (not p.get("age") or p.get("age") == 0) and user.get("age"):
-                    p["age"] = user.get("age")
         result.append(PatientResponse(**p))
     return result
 
 @router.get("/hospital/{hospital_id}/directory")
 async def get_hospital_patient_directory(hospital_id: str, db = Depends(get_db)):
-    """Comprehensive Medico-Legal Patient Master Register & Directory for Government Compliance."""
-    # Ensure all appointment patients are synced
-    await get_hospital_patients(hospital_id, db=db)
+    """Comprehensive Medico-Legal Patient Master Register & Directory for Government Compliance with batch queries."""
+    from collections import defaultdict
 
     patients = await db["patients"].find({"hospital_id": hospital_id}).sort("created_at", -1).to_list(length=500)
+    if not patients:
+        await get_hospital_patients(hospital_id, db=db)
+        patients = await db["patients"].find({"hospital_id": hospital_id}).sort("created_at", -1).to_list(length=500)
+
+    # 1. Batch fetch users by phone in a single query
+    phones = list({p["phone"] for p in patients if p.get("phone")})
+    users_by_phone = {}
+    if phones:
+        try:
+            users = await db["users"].find({"phone": {"$in": phones}}).to_list(len(phones))
+            users_by_phone = {u["phone"]: u for u in users if u.get("phone")}
+        except Exception:
+            pass
+
+    # 2. Batch fetch all appointments for this hospital in a single query
+    all_appts = await db["appointments"].find({"hospital_id": hospital_id}).sort("created_at", -1).to_list(1000)
+    appts_by_phone = defaultdict(list)
+    appts_by_pid = defaultdict(list)
+    appts_by_name = defaultdict(list)
+    for a in all_appts:
+        if a.get("patient_phone"):
+            appts_by_phone[a["patient_phone"]].append(a)
+        if a.get("patient_id"):
+            appts_by_pid[a["patient_id"]].append(a)
+        if a.get("patient_name"):
+            appts_by_name[a["patient_name"].strip().lower()].append(a)
+
     directory = []
 
     for p in patients:
         phone = p.get("phone")
         pid = p.get("pid")
-        
-        user = None
-        if phone:
-            user = await db["users"].find_one({"phone": phone})
+        name = p.get("name") or "Unknown"
+        user = users_by_phone.get(phone)
 
-        query_conditions = []
-        if phone:
-            query_conditions.append({"patient_phone": phone})
-        if pid:
-            query_conditions.append({"patient_id": pid})
-        if p.get("name"):
-            query_conditions.append({"patient_name": p.get("name")})
-            
+        # Retrieve appointments in memory with deduplication
+        seen_ids = set()
         appts = []
-        if query_conditions:
-            appts = await db["appointments"].find({
-                "hospital_id": hospital_id,
-                "$or": query_conditions
-            }).sort("created_at", -1).to_list(length=100)
+        candidates = (
+            (appts_by_phone.get(phone, []) if phone else []) +
+            (appts_by_pid.get(pid, []) if pid else []) +
+            (appts_by_name.get(name.strip().lower(), []) if name else [])
+        )
+        for cand in candidates:
+            cid = str(cand["_id"])
+            if cid not in seen_ids:
+                seen_ids.add(cid)
+                appts.append(cand)
 
         depts = list({a.get("department_name") for a in appts if a.get("department_name")})
         if not depts and p.get("department_name"):
@@ -374,7 +400,8 @@ async def get_hospital_patient_directory(hospital_id: str, db = Depends(get_db))
         for a in appts:
             dt_str = a.get("appointment_date")
             if not dt_str and a.get("created_at"):
-                dt_str = a.get("created_at").strftime("%Y-%m-%d")
+                c_at = a.get("created_at")
+                dt_str = c_at.strftime("%Y-%m-%d") if isinstance(c_at, datetime) else str(c_at)[:10]
             history.append({
                 "appointment_id": str(a.get("_id")),
                 "date": dt_str or "-",
@@ -395,7 +422,7 @@ async def get_hospital_patient_directory(hospital_id: str, db = Depends(get_db))
         entry = {
             "id": str(p.get("_id")),
             "pid": pid or "CS-P-PENDING",
-            "name": p.get("name") or "Unknown",
+            "name": name,
             "phone": phone or "-",
             "email": (user.get("email") if user else None) or p.get("email") or "-",
             "age": p.get("age") or (user.get("age") if user else 0),

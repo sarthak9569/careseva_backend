@@ -56,7 +56,7 @@ async def admit_patient(admission: AdmissionCreate, db = Depends(get_db)):
     if not data.get("admission_date"):
         data["admission_date"] = now_ist.strftime("%Y-%m-%d")
     if not data.get("admission_time"):
-        data["admission_time"] = now_ist.strftime("%I:%M %p")
+        data["admission_time"] = now_ist.strftime("%H:%M")
 
     hospital_id = data["hospital_id"]
     dept_id = data.get("department_id")
@@ -254,7 +254,7 @@ async def update_admission_status(admission_id: str, update_data: AdmissionUpdat
 
     data["updated_at"] = get_ist_now()
     if data.get("status") == "DISCHARGED" and not data.get("discharge_date"):
-        data["discharge_date"] = get_ist_now().strftime("%Y-%m-%d %I:%M %p")
+        data["discharge_date"] = get_ist_now().strftime("%Y-%m-%d %H:%M")
 
     result = await db["admissions"].update_one(
         {"_id": ObjectId(admission_id)},

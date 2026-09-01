@@ -241,29 +241,63 @@ async def get_queue_entries(doctor_id: str, db = Depends(get_db)):
 
 @router.get("/{doctor_id}/history", response_model=List[QueueEntryResponse])
 async def get_patient_history(doctor_id: str, date: str = None, db = Depends(get_db)):
-    from typing import Optional
-    
     query = {
         "doctor_id": doctor_id,
         "status": {"$in": ["COMPLETED", "CANCELLED", "NO_SHOW"]}
     }
     
-    if date:
-        try:
-            target_date = datetime.strptime(date, "%Y-%m-%d").date()
-            start = datetime.combine(target_date, datetime.min.time())
-            end = datetime.combine(target_date, datetime.max.time())
-            query["updated_at"] = {"$gte": start, "$lte": end}
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-            
     # Sort by updated_at descending so most recent is first
     cursor = db["queue_entries"].find(query).sort("updated_at", -1)
     entries = await cursor.to_list(length=200)
     
+    # Collect all appointment_ids to batch fetch appointments
+    appt_ids = []
+    for e in entries:
+        aid = e.get("appointment_id")
+        if aid:
+            try:
+                appt_ids.append(ObjectId(aid))
+            except Exception:
+                pass
+
+    appts_map = {}
+    if appt_ids:
+        appts = await db["appointments"].find({"_id": {"$in": appt_ids}}).to_list(len(appt_ids))
+        for a in appts:
+            appts_map[str(a["_id"])] = a
+
     result = []
     for e in entries:
         e["id"] = str(e["_id"])
+        aid = e.get("appointment_id")
+        appt = appts_map.get(aid) if aid else None
+        
+        appt_date = None
+        if appt:
+            appt_date = appt.get("appointment_date")
+            e["appointment_date"] = appt_date
+            e["patient_age"] = appt.get("patient_age")
+            e["patient_gender"] = appt.get("patient_gender")
+            e["patient_phone"] = appt.get("patient_phone")
+            e["time_slot"] = appt.get("time_slot")
+            if appt.get("created_at"):
+                c_at = appt["created_at"]
+                if isinstance(c_at, datetime):
+                    e["appointment_time"] = c_at.strftime("%H:%M")
+                else:
+                    e["appointment_time"] = str(c_at)
+        
+        # If date filter is provided, match against appointment_date or updated_at date
+        if date:
+            entry_updated_date = ""
+            if isinstance(e.get("updated_at"), datetime):
+                entry_updated_date = e["updated_at"].strftime("%Y-%m-%d")
+            elif e.get("updated_at"):
+                entry_updated_date = str(e["updated_at"])[:10]
+
+            if appt_date != date and entry_updated_date != date:
+                continue
+
         result.append(QueueEntryResponse(**e))
     return result
 

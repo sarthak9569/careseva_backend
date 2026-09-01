@@ -53,6 +53,12 @@ class QueueEntryResponse(QueueEntryBase):
     doctor_id: str
     created_at: datetime
     updated_at: datetime
+    appointment_date: Optional[str] = None
+    appointment_time: Optional[str] = None
+    time_slot: Optional[str] = None
+    patient_age: Optional[int] = None
+    patient_gender: Optional[str] = None
+    patient_phone: Optional[str] = None
 
 # Appointment Model
 class AppointmentBase(BaseModel):

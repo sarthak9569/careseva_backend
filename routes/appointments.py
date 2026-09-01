@@ -29,6 +29,63 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
         elif "yesterday" in d_str:
             appt_data["appointment_date"] = (now_ist - timedelta(days=1)).strftime("%Y-%m-%d")
 
+    # RESTRICTION: Restrict multiple appointment booking from same PID on the same day for the same doctor.
+    # User CAN book multiple appointments for different doctors using the same PID.
+    doctor_id = appointment.doctor_id
+    patient_id = appointment.patient_id
+    patient_phone = appointment.patient_phone or ""
+
+    resolved_pid = None
+    if patient_id and str(patient_id).startswith("CS-P-"):
+        resolved_pid = str(patient_id)
+
+    # Resolve PID from users or patients collection if not direct
+    if not resolved_pid and patient_phone:
+        user_doc = await db["users"].find_one({"phone": patient_phone})
+        if user_doc and user_doc.get("pid"):
+            resolved_pid = user_doc["pid"]
+    if not resolved_pid and patient_id:
+        try:
+            user_doc = await db["users"].find_one({"_id": ObjectId(patient_id)})
+            if user_doc and user_doc.get("pid"):
+                resolved_pid = user_doc["pid"]
+        except Exception:
+            pass
+    if not resolved_pid and patient_phone:
+        p_doc = await db["patients"].find_one({"hospital_id": appointment.hospital_id, "phone": patient_phone})
+        if p_doc and p_doc.get("pid"):
+            resolved_pid = p_doc["pid"]
+
+    # Match conditions for this patient
+    match_conditions = []
+    if resolved_pid:
+        match_conditions.append({"patient_id": resolved_pid})
+    if patient_id:
+        match_conditions.append({"patient_id": patient_id})
+    if patient_phone:
+        match_conditions.append({"patient_phone": patient_phone})
+
+    if match_conditions and doctor_id:
+        existing_booking = await db["appointments"].find_one({
+            "doctor_id": doctor_id,
+            "appointment_date": appt_data["appointment_date"],
+            "status": {"$nin": ["CANCELLED", "NO_SHOW"]},
+            "$or": match_conditions
+        })
+
+        if existing_booking:
+            doctor_doc = None
+            try:
+                doctor_doc = await db["doctors"].find_one({"_id": ObjectId(doctor_id)})
+            except Exception:
+                pass
+            doc_name = doctor_doc.get("name") if doctor_doc else (appointment.doctor_name or "this doctor")
+            pid_display = f" (PID: {resolved_pid})" if resolved_pid else ""
+            raise HTTPException(
+                status_code=400,
+                detail=f"An appointment is already booked with {doc_name} for this patient{pid_display} on {appt_data['appointment_date']}. Multiple appointments for the same doctor on the same day are not allowed."
+            )
+
     db_appt = AppointmentInDB(
         **appt_data,
         id="",
