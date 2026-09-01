@@ -5,6 +5,7 @@ from database import get_db
 from core.pid_generator import generate_unique_pid
 from bson import ObjectId
 from datetime import datetime, timezone, timedelta
+import re
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -24,6 +25,105 @@ def calculate_age_from_dob(dob_str: str) -> int:
 
 router = APIRouter()
 
+@router.get("/check-duplicate")
+async def check_patient_duplicate(
+    hospital_id: str,
+    phone: str,
+    name: Optional[str] = None,
+    dob: Optional[str] = None,
+    age: Optional[int] = None,
+    gender: Optional[str] = None,
+    doctor_id: Optional[str] = None,
+    department_id: Optional[str] = None,
+    db = Depends(get_db)
+):
+    """Pre-check if an appointment already exists for this patient identity on today's date."""
+    now_ist = get_ist_now()
+    appointment_date = now_ist.strftime("%Y-%m-%d")
+    input_phone = phone.strip()
+    input_name = (name or "").strip()
+    input_dob = (dob or "").replace("-", "/").strip()
+    input_age = int(age or 0)
+    input_gender = (gender or "").strip().lower()
+
+    if not input_phone:
+        return {"has_duplicate": False}
+
+    existing_patients = await db["patients"].find({
+        "hospital_id": hospital_id,
+        "phone": input_phone
+    }).to_list(50)
+
+    matched_patient = None
+    for ep in existing_patients:
+        ep_name = str(ep.get("name") or "").strip().lower()
+        ep_gender = str(ep.get("gender") or "").strip().lower()
+        ep_dob = str(ep.get("dob") or "").replace("-", "/").strip()
+        ep_age = int(ep.get("age") or 0)
+
+        name_match = not input_name or (ep_name == input_name.lower()) or (ep_name in input_name.lower()) or (input_name.lower() in ep_name)
+        gender_match = not input_gender or (not ep_gender) or (ep_gender == input_gender) or (ep_gender in ("other", "-"))
+        dob_match = bool(ep_dob and input_dob and ep_dob == input_dob)
+        age_match = bool(ep_age > 0 and input_age > 0 and abs(ep_age - input_age) <= 1)
+        age_dob_match = dob_match or age_match or (not ep_dob and ep_age == 0) or (not input_dob and input_age == 0)
+
+        if name_match and gender_match and age_dob_match:
+            matched_patient = ep
+            break
+
+    if not matched_patient:
+        return {"has_duplicate": False}
+
+    # Resolve doctor
+    target_doctor_id = doctor_id
+    if not target_doctor_id and department_id:
+        doc = await db["doctors"].find_one({"hospital_id": hospital_id, "department_id": department_id, "status": "ACTIVE"})
+        if not doc:
+            doc = await db["doctors"].find_one({"hospital_id": hospital_id, "department_id": department_id})
+        if doc:
+            target_doctor_id = str(doc["_id"])
+
+    if not target_doctor_id:
+        return {"has_duplicate": False, "matched_patient": {"pid": matched_patient.get("pid"), "name": matched_patient.get("name")}}
+
+    matched_pid = matched_patient.get("pid")
+    appt_query = {
+        "hospital_id": hospital_id,
+        "doctor_id": target_doctor_id,
+        "appointment_date": appointment_date,
+        "status": {"$nin": ["CANCELLED", "NO_SHOW"]},
+        "$or": [
+            {"patient_phone": input_phone},
+            {"patient_id": matched_pid},
+            {"patient_id": str(matched_patient.get("_id"))},
+            {"patient_name": {"$regex": f"^{re.escape(input_name)}$", "$options": "i"}}
+        ]
+    }
+    existing_appt = await db["appointments"].find_one(appt_query)
+    if existing_appt:
+        q_entry = await db["queue_entries"].find_one({"appointment_id": str(existing_appt.get("_id"))})
+        token_num = q_entry.get("token_number") if q_entry else (existing_appt.get("token_number") or "Assigned")
+        return {
+            "has_duplicate": True,
+            "existing_appointment": {
+                "appointment_id": str(existing_appt.get("_id")),
+                "pid": matched_pid or existing_appt.get("patient_id") or "CS-P-PENDING",
+                "patient_name": existing_appt.get("patient_name") or input_name,
+                "patient_phone": input_phone,
+                "doctor_name": existing_appt.get("doctor_name") or "Attending Specialist",
+                "department_name": existing_appt.get("department_name") or "General",
+                "appointment_date": appointment_date,
+                "time_slot": existing_appt.get("time_slot") or "Regular OPD",
+                "status": existing_appt.get("status") or "CONFIRMED",
+                "booking_source": existing_appt.get("booking_source") or "CareSeva App",
+                "token_number": token_num,
+                "total_fee": float(existing_appt.get("total_fee") or 500.0),
+                "payment_status": existing_appt.get("payment_status") or "DONE"
+            }
+        }
+
+    return {"has_duplicate": False, "matched_patient": {"pid": matched_pid, "name": matched_patient.get("name")}}
+
 @router.post("/", response_model=PatientResponse)
 async def register_patient(patient: PatientCreate, db = Depends(get_db)):
     data = patient.dict()
@@ -39,163 +139,272 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
     if not data.get("last_visit"):
         data["last_visit"] = now_ist.strftime("%Y-%m-%d")
 
-    # If department_name is not provided, fetch from department_id
-    if data.get("department_id") and not data.get("department_name"):
+    hospital_id = str(data.get("hospital_id") or "")
+    dept_id = str(data.get("department_id") or "")
+    input_phone = str(data.get("phone") or "").strip()
+    input_name = str(data.get("name") or "").strip()
+    input_dob = str(data.get("dob") or "").replace("-", "/").strip()
+    input_age = int(data.get("age") or 0)
+    input_gender = str(data.get("gender") or "").strip().lower()
+    appointment_date = now_ist.strftime("%Y-%m-%d")
+
+    # Resolve target doctor
+    doctor = None
+    if data.get("doctor_id"):
         try:
-            dept = await db["departments"].find_one({"_id": ObjectId(data["department_id"])})
-            if dept:
-                data["department_name"] = dept.get("name", "General")
+            doctor = await db["doctors"].find_one({"_id": ObjectId(data["doctor_id"])})
         except Exception:
+            pass
+    if not doctor and dept_id:
+        doctor = await db["doctors"].find_one({
+            "hospital_id": hospital_id,
+            "department_id": dept_id,
+            "status": "ACTIVE"
+        })
+    if not doctor and dept_id:
+        doctor = await db["doctors"].find_one({
+            "hospital_id": hospital_id,
+            "department_id": dept_id
+        })
+    if not doctor:
+        doctor = await db["doctors"].find_one({"hospital_id": hospital_id})
+
+    doctor_id = str(doctor["_id"]) if doctor else (data.get("doctor_id") or "walkin_doctor")
+    doctor_name = doctor.get("name") if doctor else (data.get("doctor_name") or "Duty Doctor")
+    
+    # Resolve department name
+    if not data.get("department_name"):
+        if doctor and doctor.get("department_name"):
+            data["department_name"] = doctor.get("department_name")
+        elif dept_id:
+            try:
+                dept = await db["departments"].find_one({"_id": ObjectId(dept_id)})
+                if dept:
+                    data["department_name"] = dept.get("name", "General")
+            except Exception:
+                data["department_name"] = "General"
+        else:
             data["department_name"] = "General"
 
-    # Generate unique PID
-    unique_pid = await generate_unique_pid(db)
-    data["pid"] = unique_pid
+    dept_name = data["department_name"]
 
-    db_patient = PatientInDB(
-        **data,
-        id="",
-        created_at=now_ist,
-        updated_at=now_ist
-    )
+    # 1. Check if phone number matches any existing patient in this hospital
+    matched_patient = None
+    if input_phone:
+        existing_patients = await db["patients"].find({
+            "hospital_id": hospital_id,
+            "phone": input_phone
+        }).to_list(50)
 
-    db_dict = db_patient.dict(exclude={"id"})
-    result = await db["patients"].insert_one(db_dict)
-    db_dict["id"] = str(result.inserted_id)
+        for ep in existing_patients:
+            ep_name = str(ep.get("name") or "").strip().lower()
+            ep_gender = str(ep.get("gender") or "").strip().lower()
+            ep_dob = str(ep.get("dob") or "").replace("-", "/").strip()
+            ep_age = int(ep.get("age") or 0)
 
-    # Automatically queue the patient into the respective department (Book walk-in appointment)
-    if data.get("department_id"):
-        try:
-            hospital_id = data["hospital_id"]
-            dept_id = data["department_id"]
+            # Check if all fields match:
+            # Name match (case-insensitive)
+            name_match = (ep_name == input_name.lower()) or (ep_name in input_name.lower()) or (input_name.lower() in ep_name)
             
-            # Find an active doctor for this department
-            doctor = await db["doctors"].find_one({
-                "hospital_id": hospital_id,
-                "department_id": dept_id,
-                "status": "ACTIVE"
+            # Gender match
+            gender_match = (not ep_gender) or (ep_gender == input_gender) or (ep_gender in ("other", "-"))
+            
+            # DOB or Age match
+            dob_match = bool(ep_dob and input_dob and ep_dob == input_dob)
+            age_match = bool(ep_age > 0 and input_age > 0 and abs(ep_age - input_age) <= 1)
+            age_dob_match = dob_match or age_match or (not ep_dob and ep_age == 0)
+
+            if name_match and gender_match and age_dob_match:
+                matched_patient = ep
+                break
+
+    # 2. If matched patient exists, check for duplicate appointment with the same doctor on the same day:
+    if matched_patient:
+        matched_pid = matched_patient.get("pid")
+        
+        appt_query = {
+            "hospital_id": hospital_id,
+            "doctor_id": doctor_id,
+            "appointment_date": appointment_date,
+            "status": {"$nin": ["CANCELLED", "NO_SHOW"]},
+            "$or": [
+                {"patient_phone": input_phone},
+                {"patient_id": matched_pid},
+                {"patient_id": str(matched_patient.get("_id"))},
+                {"patient_name": {"$regex": f"^{re.escape(input_name)}$", "$options": "i"}}
+            ]
+        }
+        existing_appt = await db["appointments"].find_one(appt_query)
+
+        if existing_appt:
+            q_entry = await db["queue_entries"].find_one({
+                "appointment_id": str(existing_appt.get("_id"))
             })
-            if not doctor:
-                doctor = await db["doctors"].find_one({
-                    "hospital_id": hospital_id,
-                    "department_id": dept_id
-                })
-            if not doctor:
-                doctor = await db["doctors"].find_one({"hospital_id": hospital_id})
+            token_num = q_entry.get("token_number") if q_entry else (existing_appt.get("token_number") or existing_appt.get("token") or "Assigned")
 
-            doctor_id = str(doctor["_id"]) if doctor else "walkin_doctor"
-            doctor_name = doctor.get("name") if doctor else "Duty Doctor"
-
-            # Parse fee from doctor or input
-            raw_fee = data.get("total_fee") or (doctor.get("consultation_fee") if doctor else 500.0) or 500.0
-            total_fee = float(raw_fee)
-            payment_status = data.get("payment_status") or "DONE"
-            paid_amount = total_fee if payment_status == "DONE" else (total_fee * 0.2)
-            remaining_amount = 0.0 if payment_status == "DONE" else (total_fee * 0.8)
-
-            db_dict["total_fee"] = total_fee
-            db_dict["payment_status"] = payment_status
-            db_dict["paid_amount"] = paid_amount
-            db_dict["remaining_amount"] = remaining_amount
-            await db["patients"].update_one(
-                {"_id": ObjectId(db_dict["id"])},
-                {"$set": {
-                    "total_fee": total_fee,
-                    "payment_status": payment_status,
-                    "paid_amount": paid_amount,
-                    "remaining_amount": remaining_amount
-                }}
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DUPLICATE_APPOINTMENT",
+                    "message": f"Patient already has an active appointment with {doctor_name} on {appointment_date}.",
+                    "existing_appointment": {
+                        "appointment_id": str(existing_appt.get("_id")),
+                        "pid": matched_pid or existing_appt.get("patient_id") or "CS-P-PENDING",
+                        "patient_name": existing_appt.get("patient_name") or input_name,
+                        "patient_phone": input_phone,
+                        "doctor_name": doctor_name,
+                        "department_name": existing_appt.get("department_name") or dept_name,
+                        "appointment_date": appointment_date,
+                        "time_slot": existing_appt.get("time_slot") or "Regular OPD",
+                        "status": existing_appt.get("status") or "CONFIRMED",
+                        "booking_source": existing_appt.get("booking_source") or "CareSeva App",
+                        "token_number": token_num,
+                        "total_fee": float(existing_appt.get("total_fee") or 500.0),
+                        "payment_status": existing_appt.get("payment_status") or "DONE"
+                    }
+                }
             )
 
-            # 1. Create Appointment
-            appointment_date = now_ist.strftime("%Y-%m-%d")
-            appt_dict = {
-                "hospital_id": hospital_id,
+    # 3. Patient is allowed to book (either new patient, or existing patient booking a DIFFERENT doctor)
+    raw_fee = data.get("total_fee") or (doctor.get("consultation_fee") if doctor else 500.0) or 500.0
+    total_fee = float(raw_fee)
+    payment_status = data.get("payment_status") or "DONE"
+    paid_amount = total_fee if payment_status == "DONE" else (total_fee * 0.2)
+    remaining_amount = 0.0 if payment_status == "DONE" else (total_fee * 0.8)
+
+    data["total_fee"] = total_fee
+    data["payment_status"] = payment_status
+    data["paid_amount"] = paid_amount
+    data["remaining_amount"] = remaining_amount
+    data["department_name"] = dept_name
+
+    if matched_patient:
+        # Re-use existing PID and existing patient document
+        unique_pid = matched_patient.get("pid")
+        patient_db_id = str(matched_patient["_id"])
+        data["pid"] = unique_pid
+        data["id"] = patient_db_id
+
+        await db["patients"].update_one(
+            {"_id": matched_patient["_id"]},
+            {"$set": {
+                "last_visit": appointment_date,
                 "department_id": dept_id,
-                "department_name": data.get("department_name", "General"),
-                "doctor_id": doctor_id,
-                "doctor_name": doctor_name,
-                "patient_id": db_dict["id"],
-                "patient_name": data["name"],
-                "patient_age": data.get("age"),
-                "patient_gender": data.get("gender"),
-                "patient_phone": data.get("phone"),
-                "booking_for": "myself",
-                "appointment_date": appointment_date,
-                "status": "BOOKED",
-                "booking_source": "DIRECT_WALKIN",
-                "payment_status": payment_status,
-                "payment_option": "full" if payment_status == "DONE" else "advance",
+                "department_name": dept_name,
+                "updated_at": now_ist,
                 "total_fee": total_fee,
                 "paid_amount": paid_amount,
                 "remaining_amount": remaining_amount,
-                "created_at": now_ist,
-                "updated_at": now_ist
-            }
-            appt_res = await db["appointments"].insert_one(appt_dict)
-            appt_id = str(appt_res.inserted_id)
+                "payment_status": payment_status
+            }}
+        )
+        db_dict = {**matched_patient, **data, "id": patient_db_id}
+    else:
+        # Generate brand new unique PID
+        unique_pid = await generate_unique_pid(db)
+        data["pid"] = unique_pid
 
-            # 2. Add to Queue
-            queue = await db["queues"].find_one({
-                "hospital_id": hospital_id,
-                "doctor_id": doctor_id,
-                "status": "ACTIVE"
-            })
+        db_patient = PatientInDB(
+            **data,
+            id="",
+            created_at=now_ist,
+            updated_at=now_ist
+        )
+        db_dict = db_patient.dict(exclude={"id"})
+        result = await db["patients"].insert_one(db_dict)
+        patient_db_id = str(result.inserted_id)
+        db_dict["id"] = patient_db_id
 
-            if not queue:
-                from models.queue import QueueInDB
-                new_queue = QueueInDB(
-                    id="",
-                    hospital_id=hospital_id,
-                    department_id=dept_id,
-                    doctor_id=doctor_id,
-                    created_at=now_ist,
-                    updated_at=now_ist,
-                    total_tokens=0,
-                    current_token=0
-                )
-                q_dict = new_queue.dict(exclude={"id"})
-                res_q = await db["queues"].insert_one(q_dict)
-                queue_id = str(res_q.inserted_id)
-                token_num = 1
-            else:
-                queue_id = str(queue["_id"])
-                token_num = (queue.get("total_tokens") or 0) + 1
+    # 4. Create Walk-in Appointment
+    appt_dict = {
+        "hospital_id": hospital_id,
+        "department_id": dept_id,
+        "department_name": dept_name,
+        "doctor_id": doctor_id,
+        "doctor_name": doctor_name,
+        "patient_id": unique_pid,
+        "patient_name": data["name"],
+        "patient_age": data.get("age"),
+        "patient_gender": data.get("gender"),
+        "patient_phone": data.get("phone"),
+        "booking_for": "myself",
+        "appointment_date": appointment_date,
+        "status": "BOOKED",
+        "booking_source": "DIRECT_WALKIN",
+        "payment_status": payment_status,
+        "payment_option": "full" if payment_status == "DONE" else "advance",
+        "total_fee": total_fee,
+        "paid_amount": paid_amount,
+        "remaining_amount": remaining_amount,
+        "created_at": now_ist,
+        "updated_at": now_ist
+    }
+    appt_res = await db["appointments"].insert_one(appt_dict)
+    appt_id = str(appt_res.inserted_id)
 
-            await db["queues"].update_one({"_id": ObjectId(queue_id)}, {"$inc": {"total_tokens": 1}})
+    # 5. Add to Doctor's Queue
+    queue = await db["queues"].find_one({
+        "hospital_id": hospital_id,
+        "doctor_id": doctor_id,
+        "status": "ACTIVE"
+    })
 
-            from models.queue import QueueEntryInDB
-            db_entry = QueueEntryInDB(
-                id="",
-                queue_id=queue_id,
-                patient_id=db_dict["id"],
-                patient_name=data["name"],
-                token_number=token_num,
-                hospital_id=hospital_id,
-                department_id=dept_id,
-                doctor_id=doctor_id,
-                appointment_id=appt_id,
-                status="WAITING",
-                created_at=now_ist,
-                updated_at=now_ist
-            )
-            await db["queue_entries"].insert_one(db_entry.dict(exclude={"id"}))
+    if not queue:
+        from models.queue import QueueInDB
+        new_queue = QueueInDB(
+            id="",
+            hospital_id=hospital_id,
+            department_id=dept_id,
+            doctor_id=doctor_id,
+            created_at=now_ist,
+            updated_at=now_ist,
+            total_tokens=0,
+            current_token=0
+        )
+        q_dict = new_queue.dict(exclude={"id"})
+        res_q = await db["queues"].insert_one(q_dict)
+        queue_id = str(res_q.inserted_id)
+        token_num = 1
+    else:
+        queue_id = str(queue["_id"])
+        token_num = (queue.get("total_tokens") or 0) + 1
 
-            # Broadcast to WebSocket
-            from routes.queue import manager
-            await manager.broadcast_queue_update(doctor_id, {
-                "event": "new_patient",
-                "token_number": token_num,
-                "patient_name": data["name"],
-                "appointment_id": appt_id
-            })
+    await db["queues"].update_one({"_id": ObjectId(queue_id)}, {"$inc": {"total_tokens": 1}})
 
-            db_dict["appointment_id"] = appt_id
-            db_dict["token_number"] = token_num
-        except Exception as e:
-            print(f"Error auto-queuing patient into department: {e}")
+    from models.queue import QueueEntryInDB
+    db_entry = QueueEntryInDB(
+        id="",
+        queue_id=queue_id,
+        patient_id=unique_pid,
+        patient_name=data["name"],
+        token_number=token_num,
+        hospital_id=hospital_id,
+        department_id=dept_id,
+        doctor_id=doctor_id,
+        appointment_id=appt_id,
+        status="WAITING",
+        created_at=now_ist,
+        updated_at=now_ist
+    )
+    await db["queue_entries"].insert_one(db_entry.dict(exclude={"id"}))
+
+    # Broadcast to WebSocket
+    try:
+        from routes.queue import manager
+        await manager.broadcast_queue_update(doctor_id, {
+            "event": "new_patient",
+            "token_number": token_num,
+            "patient_name": data["name"],
+            "appointment_id": appt_id
+        })
+    except Exception:
+        pass
+
+    db_dict["appointment_id"] = appt_id
+    db_dict["token_number"] = token_num
 
     return PatientResponse(**db_dict)
+
 
 @router.patch("/{patient_id}/complete-payment", response_model=PatientResponse)
 async def complete_patient_payment(patient_id: str, db = Depends(get_db)):
@@ -327,8 +536,18 @@ async def get_hospital_patients(hospital_id: str, search: Optional[str] = None, 
         except Exception as e:
             print(f"Error during batch user enrichment: {e}")
 
-    result = []
+    seen_identities = set()
+    deduped_patients = []
     for p in patients:
+        phone = (p.get("phone") or "").strip()
+        name = (p.get("name") or "").strip().lower()
+        key = (phone, name) if phone and name else str(p.get("_id"))
+        if key not in seen_identities:
+            seen_identities.add(key)
+            deduped_patients.append(p)
+
+    result = []
+    for p in deduped_patients:
         p["id"] = str(p["_id"])
         result.append(PatientResponse(**p))
     return result
