@@ -195,11 +195,25 @@ async def get_patient_active_queue(
         doctor_name = doctor.get("name") if doctor else "Duty Doctor"
         dept_name = entry.get("department_name") or (dept.get("name") if dept else "General")
 
+        hospital_id = entry.get("hospital_id") or (doctor.get("hospital_id") if doctor else None)
+        hospital_name = "CareSeva Hospital"
+        if hospital_id:
+            try:
+                hosp = await db["hospitals"].find_one({"_id": ObjectId(hospital_id)})
+            except Exception:
+                hosp = await db["hospitals"].find_one({"_id": hospital_id})
+            if not hosp:
+                hosp = await db["hospitals"].find_one({"hop_id": hospital_id})
+            if hosp and hosp.get("name"):
+                hospital_name = hosp["name"]
+
         active_list.append({
             "entry_id": str(entry["_id"]),
             "doctor_id": doctor_id,
             "doctor_name": doctor_name,
             "department_name": dept_name,
+            "hospital_id": hospital_id,
+            "hospital_name": hospital_name,
             "token_number": entry.get("token_number", 0),
             "current_token": current_token,
             "total_tokens": total_tokens,
@@ -216,6 +230,8 @@ async def get_patient_active_queue(
         "doctor_id": first.get("doctor_id"),
         "doctor_name": first.get("doctor_name"),
         "department_name": first.get("department_name"),
+        "hospital_id": first.get("hospital_id"),
+        "hospital_name": first.get("hospital_name"),
         "token_number": first.get("token_number", 0),
         "current_token": first.get("current_token", 0),
         "total_tokens": first.get("total_tokens", 0),

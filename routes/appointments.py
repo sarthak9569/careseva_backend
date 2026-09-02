@@ -328,6 +328,14 @@ async def get_patient_appointments(
     departments = await dept_cursor.to_list(length=100)
     dept_map = {str(d["_id"]): d.get("name", "General") for d in departments}
 
+    # Pre-fetch hospital mapping
+    hosp_cursor = db["hospitals"].find({})
+    hospitals = await hosp_cursor.to_list(length=100)
+    hosp_map = {str(h["_id"]): h.get("name", "Hospital") for h in hospitals}
+    for h in hospitals:
+        if h.get("hop_id"):
+            hosp_map[str(h["hop_id"])] = h.get("name", "Hospital")
+
     result = []
     for a in appointments:
         for k, v in list(a.items()):
@@ -340,6 +348,9 @@ async def get_patient_appointments(
         dept_id = a.get("department_id")
         if dept_id and str(dept_id) in dept_map and not a.get("department_name"):
             a["department_name"] = dept_map[str(dept_id)]
+        hosp_id = a.get("hospital_id")
+        if hosp_id and str(hosp_id) in hosp_map:
+            a["hospital_name"] = hosp_map[str(hosp_id)]
 
         entry = await db["queue_entries"].find_one({"appointment_id": a.get("id")})
         if entry:
