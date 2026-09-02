@@ -1,6 +1,7 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator
 from typing import Optional, List
 from datetime import datetime
+import re
 
 class HospitalBase(BaseModel):
     name: str
@@ -47,6 +48,39 @@ class HospitalBase(BaseModel):
     sla_accepted_at: Optional[str] = None
     rejection_reason: Optional[str] = None
     verification_notes: Optional[str] = None
+
+    @validator("gstin", pre=True, always=True)
+    def validate_gstin(cls, v):
+        if not v or not str(v).strip():
+            return None
+        clean = str(v).strip().upper()
+        if len(clean) != 15:
+            raise ValueError("Hospital GSTIN must be exactly 15 characters.")
+        if not re.match(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$", clean):
+            raise ValueError("Invalid GSTIN format. Expected 15-character format: 09ABCDE1234F1Z5.")
+        return clean
+
+    @validator("pan_number", pre=True, always=True)
+    def validate_pan(cls, v):
+        if not v or not str(v).strip():
+            return None
+        clean = str(v).strip().upper()
+        if len(clean) != 10:
+            raise ValueError("Hospital PAN must be exactly 10 characters.")
+        if not re.match(r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$", clean):
+            raise ValueError("Invalid PAN format. Expected 10-character format: ABCDE1234F.")
+        return clean
+
+    @validator("medical_superintendent_reg_no", pre=True, always=True)
+    def validate_nmc(cls, v):
+        if not v or not str(v).strip():
+            return None
+        clean = str(v).strip().upper()
+        if len(clean) < 3 or len(clean) > 25:
+            raise ValueError("State Medical Council / NMC Reg # must be between 3 and 25 characters.")
+        if not re.match(r"^[A-Z0-9\/-]{3,25}$", clean):
+            raise ValueError("Invalid State Medical Council / NMC Reg # format. Expected format e.g. NMC-2018-0921 or MCI-45123.")
+        return clean
     
 class HospitalCreate(HospitalBase):
     password: str
