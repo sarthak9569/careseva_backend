@@ -53,3 +53,7 @@ class UserResponse(BaseModel):
     age: Optional[int] = None
     blood_group: Optional[str] = None
     hospital_id: Optional[str] = None
+    hop_id: Optional[str] = None
+    hospital_name: Optional[str] = None
+    verification_status: Optional[str] = "APPROVED"
+    rejection_reason: Optional[str] = None

@@ -98,12 +98,52 @@ async def login(user: UserLogin, db = Depends(get_db)):
             detail="Invalid email or password"
         )
         
+    # Check hospital verification status if user is tied to a hospital
+    v_status = "APPROVED"
+    rejection_reason = None
+    hop_id = db_user.get("hop_id")
+    hospital_name = db_user.get("hospital_name")
+
+    if db_user.get("hospital_id"):
+        from bson import ObjectId
+        hosp = None
+        try:
+            hosp = await db["hospitals"].find_one({"_id": ObjectId(db_user["hospital_id"])})
+        except Exception:
+            pass
+        if not hosp:
+            hosp = await db["hospitals"].find_one({"hop_id": db_user["hospital_id"]})
+        
+        if hosp:
+            v_status = hosp.get("verification_status") or "PENDING"
+            rejection_reason = hosp.get("rejection_reason")
+            hop_id = hosp.get("hop_id") or hop_id
+            hospital_name = hosp.get("name") or hospital_name
+
+            # If REJECTED: block login and return detailed rejection message
+            if v_status == "REJECTED":
+                reason_msg = rejection_reason or "Statutory clinical establishment credentials could not be verified."
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"REGISTRATION_REJECTED: Your hospital registration was rejected by CareSeva Superadmin. Reason: {reason_msg}"
+                )
+
+            if hosp.get("status") == "SUSPENDED":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="HOSPITAL_SUSPENDED: This facility has been temporarily suspended by CareSeva Superadmin."
+                )
+        
     return UserResponse(
         id=str(db_user["_id"]),
         name=db_user["name"],
         email=db_user["email"],
         role=db_user["role"],
-        hospital_id=db_user.get("hospital_id")
+        hospital_id=db_user.get("hospital_id"),
+        hop_id=hop_id,
+        hospital_name=hospital_name,
+        verification_status=v_status,
+        rejection_reason=rejection_reason
     )
 
 from pydantic import BaseModel
@@ -115,10 +155,23 @@ class DoctorLogin(BaseModel):
 @router.post("/doctor-login", response_model=UserResponse)
 async def doctor_login(login_data: DoctorLogin, db = Depends(get_db)):
     # 1. Find the hospital by HopID
-    hospital = await db["hospitals"].find_one({"hop_id": login_data.hop_id, "status": "ACTIVE"})
+    hospital = await db["hospitals"].find_one({"hop_id": login_data.hop_id})
     if not hospital:
         raise HTTPException(status_code=401, detail="Invalid HopID or Hospital not found")
         
+    if hospital.get("verification_status") == "REJECTED":
+        reason = hospital.get("rejection_reason") or "Application rejected by Superadmin."
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail=f"REGISTRATION_REJECTED: Hospital registration was rejected by CareSeva Superadmin. Reason: {reason}"
+        )
+
+    if hospital.get("verification_status") == "PENDING" or hospital.get("status") != "ACTIVE":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="REGISTRATION_PENDING: Hospital registration is currently undergoing verification by CareSeva Superadmin. Clinical portal is locked."
+        )
+
     hospital_id = str(hospital["_id"])
     
     # 2. Find the doctor by DocID within this hospital
@@ -129,10 +182,38 @@ async def doctor_login(login_data: DoctorLogin, db = Depends(get_db)):
     return UserResponse(
         id=str(doctor["_id"]),
         name=doctor["name"],
-        email=f"{login_data.doc_id.lower()}@careseva.com", # Mock email for doctor session
+        email=f"{login_data.doc_id.lower()}@careseva.com",
         role="doctor",
-        hospital_id=hospital_id
+        hospital_id=hospital_id,
+        hop_id=hospital.get("hop_id"),
+        hospital_name=hospital.get("name"),
+        verification_status="APPROVED"
     )
+
+@router.get("/hospital-status/{hospital_id}")
+async def get_hospital_status(hospital_id: str, db = Depends(get_db)):
+    """Check live verification and operational status of a hospital."""
+    from bson import ObjectId
+    hosp = None
+    try:
+        hosp = await db["hospitals"].find_one({"_id": ObjectId(hospital_id)})
+    except Exception:
+        pass
+    if not hosp:
+        hosp = await db["hospitals"].find_one({"hop_id": hospital_id})
+
+    if not hosp:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+
+    return {
+        "hospital_id": str(hosp["_id"]),
+        "hop_id": hosp.get("hop_id"),
+        "name": hosp.get("name"),
+        "status": hosp.get("status", "INACTIVE"),
+        "verification_status": hosp.get("verification_status", "PENDING"),
+        "rejection_reason": hosp.get("rejection_reason"),
+        "is_approved": hosp.get("verification_status") == "APPROVED" and hosp.get("status") == "ACTIVE"
+    }
 
 import random
 from datetime import datetime, timezone, timedelta
