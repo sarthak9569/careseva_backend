@@ -31,12 +31,14 @@ class QueueEntryBase(BaseModel):
     token_number: int
     status: str = "WAITING" # WAITING, CALLED, IN_CONSULTATION, COMPLETED, CANCELLED, NO_SHOW
     appointment_id: Optional[str] = None
+    patient_phone: Optional[str] = None
 
 class QueueEntryCreate(BaseModel):
     queue_id: str
     patient_id: str
     patient_name: str = "Unknown"
     appointment_id: Optional[str] = None
+    patient_phone: Optional[str] = None
 
 class QueueEntryInDB(QueueEntryBase):
     id: str
@@ -45,6 +47,7 @@ class QueueEntryInDB(QueueEntryBase):
     doctor_id: str
     created_at: datetime
     updated_at: datetime
+    patient_phone: Optional[str] = None
 
 class QueueEntryResponse(QueueEntryBase):
     id: str

@@ -133,6 +133,8 @@ async def get_patient_active_queue(
         if clean_p.startswith("+91"):
             clean_p = clean_p[3:]
         conditions.append({"phone": clean_p})
+        conditions.append({"patient_phone": clean_p})
+        conditions.append({"patient_phone": phone})
         try:
             pt = await db["patients"].find_one({"phone": clean_p})
             if pt:

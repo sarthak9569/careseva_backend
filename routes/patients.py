@@ -377,6 +377,7 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
         queue_id=queue_id,
         patient_id=unique_pid,
         patient_name=data["name"],
+        patient_phone=data.get("phone"),
         token_number=token_num,
         hospital_id=hospital_id,
         department_id=dept_id,

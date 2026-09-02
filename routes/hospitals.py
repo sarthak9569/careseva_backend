@@ -26,19 +26,28 @@ async def register_hospital(hospital: HospitalCreate, db = Depends(get_db)):
         
         # Hash password
         hashed_password = get_password_hash(hospital.password)
+        # Prepare hospital dictionary
         hospital_dict = hospital.dict()
-        del hospital_dict["password"]
+        hospital_dict.pop("password", None)
+        hospital_dict.pop("hop_id", None)
+        hospital_dict.pop("id", None)
         
+        # Default legal SLA acceptance timestamp if not supplied
+        if not hospital_dict.get("sla_accepted_at"):
+            hospital_dict["sla_accepted_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
         # Generate unique HopID
         hop_id = generate_hop_id()
         while await db["hospitals"].find_one({"hop_id": hop_id}):
             hop_id = generate_hop_id()
             
-        # Prepare DB model
+        # Prepare DB model with PENDING verification status
         db_hospital = HospitalInDB(
             **hospital_dict,
             id="", # Will be set by mongo
             hashed_password=hashed_password,
+            status="INACTIVE", # Remains inactive until superadmin verifies legal credentials
+            verification_status="PENDING",
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             hop_id=hop_id
@@ -52,11 +61,13 @@ async def register_hospital(hospital: HospitalCreate, db = Depends(get_db)):
         
         # Also create an admin user in users collection for login (auth.py uses users collection)
         admin_user = {
-            "name": hospital.name,
+            "name": hospital.contact_person or hospital.name,
             "email": hospital.email,
             "role": "admin",
             "hashed_password": hashed_password,
-            "hospital_id": db_dict["id"]
+            "hospital_id": db_dict["id"],
+            "hospital_name": hospital.name,
+            "hop_id": hop_id
         }
         await db["users"].insert_one(admin_user)
         
