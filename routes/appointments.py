@@ -65,26 +65,53 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
     if patient_phone:
         match_conditions.append({"patient_phone": patient_phone})
 
-    if match_conditions and doctor_id:
-        existing_booking = await db["appointments"].find_one({
-            "doctor_id": doctor_id,
-            "appointment_date": appt_data["appointment_date"],
-            "status": {"$nin": ["CANCELLED", "NO_SHOW"]},
-            "$or": match_conditions
-        })
+    # RESTRICTION LOGIC:
+    # Multiple appointments on the same PID are allowed when booking for someone else (family/others).
+    # Restriction applies only if user chooses 'myself' for the same doctor on the same day.
+    booking_for = (appt_data.get("booking_for") or "myself").strip().lower()
 
-        if existing_booking:
-            doctor_doc = None
-            try:
-                doctor_doc = await db["doctors"].find_one({"_id": ObjectId(doctor_id)})
-            except Exception:
-                pass
-            doc_name = doctor_doc.get("name") if doctor_doc else (appointment.doctor_name or "this doctor")
-            pid_display = f" (PID: {resolved_pid})" if resolved_pid else ""
-            raise HTTPException(
-                status_code=400,
-                detail=f"An appointment is already booked with {doc_name} for this patient{pid_display} on {appt_data['appointment_date']}. Multiple appointments for the same doctor on the same day are not allowed."
-            )
+    if match_conditions and doctor_id:
+        doctor_doc = None
+        try:
+            doctor_doc = await db["doctors"].find_one({"_id": ObjectId(doctor_id)})
+        except Exception:
+            pass
+        doc_name = doctor_doc.get("name") if doctor_doc else (appointment.doctor_name or "this doctor")
+        pid_display = f" (PID: {resolved_pid})" if resolved_pid else ""
+
+        if booking_for == "myself":
+            # Restrict ONLY if user chooses 'myself' and already has a booking for themselves
+            existing_self_booking = await db["appointments"].find_one({
+                "doctor_id": doctor_id,
+                "appointment_date": appt_data["appointment_date"],
+                "status": {"$nin": ["CANCELLED", "NO_SHOW"]},
+                "booking_for": {"$in": ["myself", None, ""]},
+                "$or": match_conditions
+            })
+
+            if existing_self_booking:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"You already have an appointment booked for yourself with {doc_name} on {appt_data['appointment_date']}{pid_display}. Multiple appointments for yourself with the same doctor on the same day are not allowed. You can book for family members or someone else."
+                )
+        else:
+            # User chose 'someone_else' on this PID -> ALLOW multiple appointments!
+            # Only prevent duplicate booking for the exact same patient's name on the same day:
+            p_name = (appointment.patient_name or "").strip()
+            if p_name:
+                import re
+                existing_duplicate = await db["appointments"].find_one({
+                    "doctor_id": doctor_id,
+                    "appointment_date": appt_data["appointment_date"],
+                    "status": {"$nin": ["CANCELLED", "NO_SHOW"]},
+                    "patient_name": {"$regex": f"^{re.escape(p_name)}$", "$options": "i"},
+                    "$or": match_conditions
+                })
+                if existing_duplicate:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"An appointment is already booked for '{p_name}' with {doc_name} on {appt_data['appointment_date']} under this account. Duplicate bookings for the same person are not allowed."
+                    )
 
     db_appt = AppointmentInDB(
         **appt_data,
