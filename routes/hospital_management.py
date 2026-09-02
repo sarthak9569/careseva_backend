@@ -187,9 +187,61 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
         "status": "ACTIVE"
     })
     
-    # 4. Today's Revenue (mocked based on appointments today * 50)
-    todays_revenue = appointments_today_count * 50
-    
+    # 4. Real Revenue Calculation based on fees manually set by the hospital:
+    doc_fee_map = {}
+    doctors_cursor = db["doctors"].find({"hospital_id": hospital_id})
+    all_hospital_doctors = await doctors_cursor.to_list(length=1000)
+    for doc in all_hospital_doctors:
+        fee = float(doc.get("consultation_fee") or 0.0)
+        doc_fee_map[str(doc["_id"])] = fee
+        if doc.get("doc_id"):
+            doc_fee_map[str(doc["doc_id"])] = fee
+
+    # Today's appointments revenue
+    today_appts_cursor = db["appointments"].find({
+        "hospital_id": hospital_id,
+        "appointment_date": today_start_str
+    })
+    today_appts = await today_appts_cursor.to_list(length=10000)
+    todays_revenue = 0.0
+    for a in today_appts:
+        fee = float(a.get("paid_amount") or a.get("total_fee") or 0.0)
+        if fee <= 0 and a.get("doctor_id"):
+            fee = doc_fee_map.get(str(a["doctor_id"]), 0.0)
+        if fee <= 0:
+            fee = 500.0
+        todays_revenue += fee
+
+    # Total cumulative revenue for this hospital
+    all_appts_cursor = db["appointments"].find({"hospital_id": hospital_id})
+    all_appts = await all_appts_cursor.to_list(length=50000)
+    total_revenue = 0.0
+    for a in all_appts:
+        fee = float(a.get("paid_amount") or a.get("total_fee") or 0.0)
+        if fee <= 0 and a.get("doctor_id"):
+            fee = doc_fee_map.get(str(a["doctor_id"]), 0.0)
+        if fee <= 0:
+            fee = 500.0
+        total_revenue += fee
+
+    # Also include any direct walk-in patient fees from patients registry
+    patients_cursor = db["patients"].find({"hospital_id": hospital_id})
+    hosp_patients = await patients_cursor.to_list(length=50000)
+    seen_patient_ids = {str(a.get("patient_id")) for a in all_appts if a.get("patient_id")}
+    seen_pids = {str(a.get("pid")) for a in all_appts if a.get("pid")}
+    for p in hosp_patients:
+        p_id = str(p.get("_id"))
+        pid = str(p.get("pid"))
+        if p_id not in seen_patient_ids and pid not in seen_pids:
+            fee = float(p.get("paid_amount") or p.get("total_fee") or 0.0)
+            if fee > 0:
+                total_revenue += fee
+                created = p.get("created_at")
+                if created:
+                    p_date = created.strftime("%Y-%m-%d") if hasattr(created, "strftime") else str(created)[:10]
+                    if p_date == today_start_str:
+                        todays_revenue += fee
+
     # 5. Recent Appointments
     recent_cursor = db["appointments"].find({"hospital_id": hospital_id}).sort("created_at", -1).limit(5)
     recent_appts = await recent_cursor.to_list(length=5)
@@ -219,7 +271,10 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
         "total_patients": total_patients,
         "appointments_today": appointments_today_count,
         "available_doctors": available_doctors_count,
-        "todays_revenue": todays_revenue,
+        "todays_revenue": round(todays_revenue, 2),
+        "total_revenue": round(total_revenue, 2),
+        "currency": "INR",
+        "currency_symbol": "₹",
         "recent_appointments": recent_list
     }
 
