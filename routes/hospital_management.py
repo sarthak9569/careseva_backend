@@ -132,14 +132,33 @@ async def update_doctor(hospital_id: str, doc_id: str, doc_update: DoctorUpdate,
 
 @router.delete("/{hospital_id}/doctors/{doc_id}")
 async def delete_doctor(hospital_id: str, doc_id: str, db = Depends(get_db)):
-    doctor = await db["doctors"].find_one({"_id": ObjectId(doc_id), "hospital_id": hospital_id})
+    doc_match = []
+    try:
+        doc_match.append({"_id": ObjectId(doc_id)})
+    except Exception:
+        pass
+    doc_match.append({"doc_id": doc_id})
+    doc_match.append({"id": doc_id})
+
+    doctor = await db["doctors"].find_one({
+        "hospital_id": hospital_id,
+        "$or": doc_match
+    })
     if not doctor:
         raise HTTPException(status_code=404, detail="Doctor not found")
         
-    await db["doctors"].update_one(
-        {"_id": ObjectId(doc_id)},
-        {"$set": {"status": "INACTIVE"}}
-    )
+    doc_obj_id = doctor["_id"]
+    doc_id_str = str(doc_obj_id)
+    doc_code = doctor.get("doc_id")
+
+    # Actually delete the doctor from database
+    await db["doctors"].delete_one({"_id": doc_obj_id})
+    
+    # Also clean up any queues for this doctor
+    await db["queues"].delete_many({
+        "hospital_id": hospital_id,
+        "$or": [{"doctor_id": doc_id_str}, {"doctor_id": doc_code}]
+    })
     
     return {"message": "Doctor deleted successfully"}
 
