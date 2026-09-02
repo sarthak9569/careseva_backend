@@ -7,6 +7,7 @@ from bson import ObjectId
 from datetime import datetime
 import random
 import string
+import httpx
 
 router = APIRouter()
 
@@ -90,6 +91,48 @@ async def get_active_hospitals(db = Depends(get_db)):
         h["id"] = str(h["_id"])
         result.append(HospitalResponse(**h))
     return result
+
+@router.get("/reverse-geocode")
+async def reverse_geocode(lat: float, lng: float):
+    """Reverse geocode latitude and longitude to auto-fill City, State, Pincode, and Address."""
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1"
+        async with httpx.AsyncClient(timeout=7.0) as client:
+            resp = await client.get(url, headers={"User-Agent": "CareSeva-Hospital-Registry/1.0"})
+            if resp.status_code == 200:
+                data = resp.json()
+                addr = data.get("address", {})
+                
+                # City fallback hierarchy (city -> town -> municipality -> suburb -> state_district -> county)
+                city = (
+                    addr.get("city") or 
+                    addr.get("town") or 
+                    addr.get("municipality") or 
+                    addr.get("suburb") or 
+                    addr.get("state_district") or 
+                    addr.get("county") or 
+                    ""
+                )
+                state = addr.get("state", "")
+                pincode = addr.get("postcode", "")
+                
+                # Format friendly road/neighborhood address
+                road = addr.get("road") or addr.get("pedestrian") or ""
+                suburb = addr.get("suburb") or addr.get("neighbourhood") or ""
+                parts = [p for p in [road, suburb] if p]
+                address_str = ", ".join(parts) if parts else data.get("display_name", "")
+
+                return {
+                    "city": city,
+                    "state": state,
+                    "pincode": pincode,
+                    "address": address_str,
+                    "display_name": data.get("display_name", "")
+                }
+    except Exception as e:
+        print(f"Reverse geocode error: {e}")
+    
+    return {"city": "", "state": "", "pincode": "", "address": "", "display_name": ""}
 
 @router.get("/{hospital_id}", response_model=HospitalResponse)
 async def get_hospital(hospital_id: str, db = Depends(get_db)):
