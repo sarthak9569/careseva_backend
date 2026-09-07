@@ -104,16 +104,16 @@ async def create_cashfree_order(request: CreateOrderRequest):
                 cf_data = resp.json()
                 payment_session_id = cf_data.get("payment_session_id")
                 env_str = settings.CASHFREE_ENV.upper()
-                if env_str in ["PRODUCTION", "PROD"]:
-                    payment_link = f"https://payments.cashfree.com/order/#{payment_session_id}"
-                else:
-                    payment_link = f"https://payments-test.cashfree.com/order/#{payment_session_id}"
+                is_prod = env_str in ["PRODUCTION", "PROD"]
+                
+                # Standalone Web Drop Checkout URL via backend or website
+                checkout_url = f"/api/payments/cashfree/checkout-page?session_id={payment_session_id}&env={'production' if is_prod else 'sandbox'}&order_id={cf_data.get('order_id', order_id)}"
 
                 return {
                     "status": "SUCCESS",
                     "order_id": cf_data.get("order_id", order_id),
                     "payment_session_id": payment_session_id,
-                    "payment_link": payment_link,
+                    "checkout_url": checkout_url,
                     "cf_order_id": cf_data.get("cf_order_id"),
                     "order_amount": clean_amount,
                     "order_currency": "INR",
@@ -133,6 +133,83 @@ async def create_cashfree_order(request: CreateOrderRequest):
             status_code=502,
             detail=f"Unable to connect to Cashfree payment gateway: {str(exc)}"
         )
+
+
+@router.get("/cashfree/checkout-page", response_class=HTMLResponse)
+async def cashfree_checkout_page(
+    session_id: str = Query(..., description="Cashfree Payment Session ID"),
+    env: str = Query("production", description="Environment: 'production' or 'sandbox'"),
+    order_id: Optional[str] = Query(None, description="Order ID")
+):
+    """
+    Renders official Cashfree JS Drop Checkout page for seamless UPI, Card, NetBanking.
+    Bypasses Android Play Store trusted installer restrictions for side-loaded/test apps.
+    """
+    mode = "sandbox" if env.lower() == "sandbox" else "production"
+    
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CareSeva™ Secure Checkout</title>
+    <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+        body {{ background: #f8fafc; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; color: #1e293b; }}
+        .checkout-box {{ background: white; width: 100%; max-width: 460px; border-radius: 20px; box-shadow: 0 12px 30px rgba(0,0,0,0.08); overflow: hidden; border: 1px solid #e2e8f0; }}
+        .header {{ background: linear-gradient(135deg, #4f46e5, #7c3aed); padding: 24px; text-align: center; color: white; }}
+        .header h1 {{ font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }}
+        .header p {{ font-size: 13px; opacity: 0.9; margin-top: 4px; }}
+        .body {{ padding: 32px 24px; text-align: center; }}
+        .spinner {{ width: 44px; height: 44px; border: 4px solid #e2e8f0; border-top: 4px solid #4f46e5; border-radius: 50%; animation: spin 0.9s linear infinite; margin: 0 auto 16px; }}
+        @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+        .loading-title {{ font-size: 16px; font-weight: 600; color: #334155; }}
+        .loading-desc {{ font-size: 13px; color: #64748b; margin-top: 6px; line-height: 1.5; }}
+        .order-badge {{ display: inline-block; background: #f1f5f9; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; color: #475569; margin-top: 16px; }}
+        .security-badge {{ margin-top: 24px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: #10b981; font-weight: 600; }}
+    </style>
+</head>
+<body>
+    <div class="checkout-box">
+        <div class="header">
+            <h1>CareSeva™ Payments</h1>
+            <p>256-Bit SSL Encrypted & RBI Compliant</p>
+        </div>
+        <div class="body" id="drop-container">
+            <div class="spinner"></div>
+            <div class="loading-title">Loading Payment Options...</div>
+            <p class="loading-desc">Connecting to Cashfree Secure Gateway (UPI, Cards, NetBanking)...</p>
+            {f'<div class="order-badge">Order: {order_id}</div>' if order_id else ''}
+            <div class="security-badge">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+                Official Cashfree Secure Drop Checkout
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.addEventListener('DOMContentLoaded', () => {{
+            try {{
+                const cashfree = Cashfree({{
+                    mode: "{mode}"
+                }});
+                
+                cashfree.checkout({{
+                    paymentSessionId: "{session_id}",
+                    redirectTarget: "_self"
+                }});
+            }} catch (err) {{
+                document.getElementById('drop-container').innerHTML = `
+                    <div style="color: #ef4444; font-weight: bold; font-size: 16px;">Failed to initialize checkout</div>
+                    <p style="color: #64748b; font-size: 13px; margin-top: 8px;">` + err.message + `</p>
+                `;
+            }}
+        }});
+    </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content)
 
 
 @router.post("/cashfree/verify-order")
