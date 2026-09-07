@@ -5,7 +5,8 @@ import hashlib
 import base64
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, status, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from bson import ObjectId
 
