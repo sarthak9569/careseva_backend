@@ -119,41 +119,16 @@ async def create_cashfree_order(request: CreateOrderRequest):
             else:
                 error_body = resp.text
                 print(f"[Cashfree API Error {resp.status_code}]: {error_body}")
-                
-                # If credentials are not yet configured or in sandbox testing mode, provide mock sandbox session
-                if "TEST_" in settings.CASHFREE_APP_ID or settings.CASHFREE_APP_ID == "YOUR_CASHFREE_APP_ID" or resp.status_code in [401, 403]:
-                    session_id = f"sandbox_session_{order_id}"
-                    return {
-                        "status": "SUCCESS",
-                        "order_id": order_id,
-                        "payment_session_id": session_id,
-                        "payment_link": f"https://payments-test.cashfree.com/order/#{session_id}",
-                        "cf_order_id": f"cf_{uuid.uuid4().hex[:12]}",
-                        "order_amount": clean_amount,
-                        "order_currency": "INR",
-                        "environment": "SANDBOX",
-                        "is_simulated": True,
-                        "note": "Running in Cashfree Sandbox Simulator mode with test order credentials."
-                    }
-                
                 raise HTTPException(
                     status_code=resp.status_code,
-                    detail=f"Cashfree Order Creation Failed: {resp.text}"
+                    detail=f"Cashfree Order Creation Failed: {error_body}"
                 )
     except httpx.RequestError as exc:
         print(f"[Cashfree Network Error]: {exc}")
-        session_id = f"sandbox_session_{order_id}"
-        return {
-            "status": "SUCCESS",
-            "order_id": order_id,
-            "payment_session_id": session_id,
-            "payment_link": f"https://payments-test.cashfree.com/order/#{session_id}",
-            "cf_order_id": f"cf_{uuid.uuid4().hex[:12]}",
-            "order_amount": clean_amount,
-            "order_currency": "INR",
-            "environment": "SANDBOX",
-            "is_simulated": True
-        }
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to connect to Cashfree payment gateway: {str(exc)}"
+        )
 
 
 @router.post("/cashfree/verify-order")
