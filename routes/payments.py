@@ -98,14 +98,22 @@ async def create_cashfree_order(request: CreateOrderRequest):
             
             if resp.status_code in [200, 201]:
                 cf_data = resp.json()
+                payment_session_id = cf_data.get("payment_session_id")
+                env_str = settings.CASHFREE_ENV.upper()
+                if env_str in ["PRODUCTION", "PROD"]:
+                    payment_link = f"https://payments.cashfree.com/order/#{payment_session_id}"
+                else:
+                    payment_link = f"https://payments-test.cashfree.com/order/#{payment_session_id}"
+
                 return {
                     "status": "SUCCESS",
                     "order_id": cf_data.get("order_id", order_id),
-                    "payment_session_id": cf_data.get("payment_session_id"),
+                    "payment_session_id": payment_session_id,
+                    "payment_link": payment_link,
                     "cf_order_id": cf_data.get("cf_order_id"),
                     "order_amount": clean_amount,
                     "order_currency": "INR",
-                    "environment": settings.CASHFREE_ENV.upper(),
+                    "environment": env_str,
                     "is_simulated": False
                 }
             else:
@@ -114,10 +122,12 @@ async def create_cashfree_order(request: CreateOrderRequest):
                 
                 # If credentials are not yet configured or in sandbox testing mode, provide mock sandbox session
                 if "TEST_" in settings.CASHFREE_APP_ID or settings.CASHFREE_APP_ID == "YOUR_CASHFREE_APP_ID" or resp.status_code in [401, 403]:
+                    session_id = f"sandbox_session_{order_id}"
                     return {
                         "status": "SUCCESS",
                         "order_id": order_id,
-                        "payment_session_id": f"sandbox_session_{order_id}",
+                        "payment_session_id": session_id,
+                        "payment_link": f"https://payments-test.cashfree.com/order/#{session_id}",
                         "cf_order_id": f"cf_{uuid.uuid4().hex[:12]}",
                         "order_amount": clean_amount,
                         "order_currency": "INR",
@@ -132,11 +142,12 @@ async def create_cashfree_order(request: CreateOrderRequest):
                 )
     except httpx.RequestError as exc:
         print(f"[Cashfree Network Error]: {exc}")
-        # Fallback simulator for offline / sandbox development
+        session_id = f"sandbox_session_{order_id}"
         return {
             "status": "SUCCESS",
             "order_id": order_id,
-            "payment_session_id": f"sandbox_session_{order_id}",
+            "payment_session_id": session_id,
+            "payment_link": f"https://payments-test.cashfree.com/order/#{session_id}",
             "cf_order_id": f"cf_{uuid.uuid4().hex[:12]}",
             "order_amount": clean_amount,
             "order_currency": "INR",
@@ -160,6 +171,7 @@ async def verify_cashfree_order(
     is_paid = False
     payment_mode = "CASHFREE_PG"
     reference_id = order_id
+    current_status = "UNKNOWN"
 
     # If running with real Cashfree credentials, query Cashfree order API
     if not ("TEST_" in settings.CASHFREE_APP_ID or order_id.startswith("sandbox_") or settings.CASHFREE_APP_ID == "YOUR_CASHFREE_APP_ID"):
@@ -175,20 +187,23 @@ async def verify_cashfree_order(
                 resp = await client.get(f"{base_url}/orders/{order_id}", headers=headers)
                 if resp.status_code == 200:
                     order_info = resp.json()
-                    order_status = order_info.get("order_status")
-                    if order_status == "PAID":
+                    current_status = order_info.get("order_status", "UNKNOWN")
+                    if current_status == "PAID":
                         is_paid = True
                         reference_id = str(order_info.get("cf_order_id") or order_id)
+                else:
+                    print(f"Cashfree verification returned {resp.status_code}: {resp.text}")
         except Exception as e:
             print(f"Error querying Cashfree verification: {e}")
     else:
         # Sandbox simulated payment verification
         is_paid = True
+        current_status = "PAID (SANDBOX)"
 
     if not is_paid:
         raise HTTPException(
             status_code=400,
-            detail="Payment verification failed or payment is not completed yet."
+            detail=f"Payment status is '{current_status}'. Please complete your payment on Cashfree to confirm booking."
         )
 
     # Calculation of payment fields
