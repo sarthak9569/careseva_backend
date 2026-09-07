@@ -49,3 +49,9 @@ async def test_db(db = Depends(get_db)):
         return {"status": "success", "collections": collections}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
