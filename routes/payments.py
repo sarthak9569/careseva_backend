@@ -28,16 +28,20 @@ def get_cashfree_base_url() -> str:
     return "https://sandbox.cashfree.com/pg"
 
 class CashfreeCustomerDetails(BaseModel):
-    customer_id: str
+    customer_id: Optional[str] = None
     customer_name: Optional[str] = "CareSeva Patient"
-    customer_phone: str
+    customer_phone: Optional[str] = "9999999999"
     customer_email: Optional[str] = "patient@careseva.in"
 
 class CreateOrderRequest(BaseModel):
     amount: float = Field(..., gt=0, description="Amount to be paid in INR")
-    payment_option: str = Field(default="full", description="'full' or 'advance'")
-    customer_details: CashfreeCustomerDetails
-    booking_data: Dict[str, Any]
+    payment_option: Optional[str] = "full"
+    customer_details: Optional[CashfreeCustomerDetails] = None
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_email: Optional[str] = None
+    booking_data: Optional[Dict[str, Any]] = None
     order_note: Optional[str] = "CareSeva Appointment Consultation Fee"
 
 class VerifyOrderRequest(BaseModel):
@@ -54,26 +58,26 @@ async def create_cashfree_order(request: CreateOrderRequest):
     """
     clean_amount = round(float(request.amount), 2)
     order_id = f"CS_ORD_{int(get_ist_now().timestamp())}_{uuid.uuid4().hex[:6].upper()}"
-    customer_phone = request.customer_details.customer_phone or "9999999999"
-    # Clean phone to 10 digits if possible
-    digits_phone = "".join(filter(str.isdigit, customer_phone))
-    if len(digits_phone) >= 10:
-        clean_phone = digits_phone[-10:]
-    else:
-        clean_phone = "9999999999"
+    
+    # Extract customer info from nested customer_details or root fields
+    raw_phone = (request.customer_details.customer_phone if request.customer_details and request.customer_details.customer_phone else None) or request.customer_phone or "9999999999"
+    digits_phone = "".join(filter(str.isdigit, str(raw_phone)))
+    clean_phone = digits_phone[-10:] if len(digits_phone) >= 10 else "9999999999"
 
-    customer_id = request.customer_details.customer_id or f"cust_{uuid.uuid4().hex[:8]}"
-    if len(customer_id) < 3:
-        customer_id = f"cust_{customer_id}_{uuid.uuid4().hex[:4]}"
+    raw_id = (request.customer_details.customer_id if request.customer_details and request.customer_details.customer_id else None) or request.customer_id or f"cust_{uuid.uuid4().hex[:8]}"
+    clean_id = raw_id if len(raw_id) >= 3 else f"cust_{raw_id}_{uuid.uuid4().hex[:4]}"
+
+    clean_name = (request.customer_details.customer_name if request.customer_details and request.customer_details.customer_name else None) or request.customer_name or "CareSeva Patient"
+    clean_email = (request.customer_details.customer_email if request.customer_details and request.customer_details.customer_email else None) or request.customer_email or "patient@careseva.in"
 
     payload = {
         "order_id": order_id,
         "order_amount": clean_amount,
         "order_currency": "INR",
         "customer_details": {
-            "customer_id": customer_id,
-            "customer_name": request.customer_details.customer_name or "CareSeva Patient",
-            "customer_email": request.customer_details.customer_email or "patient@careseva.in",
+            "customer_id": clean_id,
+            "customer_name": clean_name,
+            "customer_email": clean_email,
             "customer_phone": clean_phone
         },
         "order_meta": {
