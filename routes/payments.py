@@ -107,8 +107,8 @@ async def create_cashfree_order(request: CreateOrderRequest):
                 env_str = settings.CASHFREE_ENV.upper()
                 is_prod = env_str in ["PRODUCTION", "PROD"]
                 
-                # Standalone Web Drop Checkout URL via backend or website
-                checkout_url = f"/api/payments/cashfree/checkout-page?session_id={payment_session_id}&env={'production' if is_prod else 'sandbox'}&order_id={cf_data.get('order_id', order_id)}"
+                # Whitelisted CareSeva Web Drop Checkout URL
+                checkout_url = f"https://careseva.co.in/checkout?session_id={payment_session_id}&env={'production' if is_prod else 'sandbox'}&order_id={cf_data.get('order_id', order_id)}"
 
                 return {
                     "status": "SUCCESS",
