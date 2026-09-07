@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     CASHFREE_API_VERSION: str = "2023-08-01"
 
     class Config:
-        env_file = ".env"
+        import os
+        env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+        extra = "allow"
 
 settings = Settings()
