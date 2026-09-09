@@ -14,6 +14,8 @@ from core.config import settings
 from database import get_db
 from models.queue import AppointmentInDB
 from core.pid_generator import generate_unique_pid
+from models.queue import QueueInDB, QueueEntryInDB
+from routes.queue import manager
 
 router = APIRouter()
 
@@ -389,6 +391,63 @@ async def process_successful_payment(
             {"_id": ObjectId(appt_id)},
             {"$set": {"patient_id": assigned_pid}}
         )
+
+    # Ensure queue and queue entry are created for the doctor dashboard
+    if hosp_id and doc_id:
+        try:
+            queue = await db["queues"].find_one({
+                "hospital_id": hosp_id,
+                "doctor_id": doc_id,
+                "status": "ACTIVE"
+            })
+            
+            if not queue:
+                new_queue = QueueInDB(
+                    id="",
+                    hospital_id=hosp_id,
+                    department_id=dept_id,
+                    doctor_id=doc_id,
+                    created_at=now_ist,
+                    updated_at=now_ist,
+                    total_tokens=0,
+                    current_token=0
+                )
+                db_queue = new_queue.dict(exclude={"id"})
+                res_q = await db["queues"].insert_one(db_queue)
+                queue_id = str(res_q.inserted_id)
+                token_num = 1
+            else:
+                queue_id = str(queue["_id"])
+                token_num = queue["total_tokens"] + 1
+                
+            await db["queues"].update_one({"_id": ObjectId(queue_id)}, {"$inc": {"total_tokens": 1}})
+            
+            db_entry = QueueEntryInDB(
+                id="",
+                queue_id=queue_id,
+                patient_id=assigned_pid or b_data.get("patient_id", ""),
+                patient_name=patient_name,
+                patient_phone=patient_phone,
+                token_number=token_num,
+                hospital_id=hosp_id,
+                department_id=dept_id,
+                doctor_id=doc_id,
+                appointment_id=appt_id,
+                created_at=now_ist,
+                updated_at=now_ist,
+                status="WAITING"
+            )
+            
+            entry_dict = db_entry.dict(exclude={"id"})
+            await db["queue_entries"].insert_one(entry_dict)
+            
+            # Broadcast to websocket
+            await manager.broadcast_queue_update(doc_id, {
+                "event": "new_patient",
+                "total_tokens": token_num
+            })
+        except Exception as e:
+            print(f"Error creating queue entry for paid appointment: {e}")
 
     # Update pending order status to CONFIRMED
     if pending_order:
