@@ -53,9 +53,13 @@ class VerifyOrderRequest(BaseModel):
     total_fee: float
 
 @router.post("/cashfree/create-order")
-async def create_cashfree_order(request: CreateOrderRequest):
+async def create_cashfree_order(
+    request: CreateOrderRequest,
+    db = Depends(get_db)
+):
     """
-    Creates a Cashfree payment order and returns the payment_session_id.
+    Creates a Cashfree payment order, persists the order draft in pending_orders,
+    and returns the payment_session_id & checkout_url.
     """
     clean_amount = round(float(request.amount), 2)
     order_id = f"CS_ORD_{int(get_ist_now().timestamp())}_{uuid.uuid4().hex[:6].upper()}"
@@ -86,6 +90,24 @@ async def create_cashfree_order(request: CreateOrderRequest):
         },
         "order_note": request.order_note
     }
+
+    # Persist pending order draft in MongoDB for automatic recovery & server-side webhooks
+    pending_doc = {
+        "order_id": order_id,
+        "amount": clean_amount,
+        "payment_option": (request.payment_option or "full").lower(),
+        "customer_details": {
+            "customer_id": clean_id,
+            "customer_name": clean_name,
+            "customer_email": clean_email,
+            "customer_phone": clean_phone
+        },
+        "booking_data": request.booking_data or {},
+        "status": "PENDING_PAYMENT",
+        "created_at": get_ist_now(),
+        "updated_at": get_ist_now()
+    }
+    await db["pending_orders"].insert_one(pending_doc)
 
     base_url = get_cashfree_base_url()
     headers = {
@@ -213,6 +235,187 @@ async def cashfree_checkout_page(
     return HTMLResponse(content=html_content)
 
 
+async def process_successful_payment(
+    db,
+    order_id: str,
+    booking_data_override: Optional[Dict[str, Any]] = None,
+    payment_option_override: Optional[str] = None,
+    paid_amount_override: Optional[float] = None,
+    total_fee_override: Optional[float] = None,
+    reference_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Idempotent helper to convert a successful Cashfree payment into a confirmed appointment
+    and synced patient record in MongoDB. Safe to be invoked multiple times by webhooks or verify calls.
+    """
+    # 1. Idempotency Check: Check if appointment already created for this order
+    existing_appt = await db["appointments"].find_one({"payment_order_id": order_id})
+    if existing_appt:
+        appt_id = str(existing_appt["_id"])
+        patient_id = existing_appt.get("patient_id", "")
+        return {
+            "status": "SUCCESS",
+            "message": "Appointment already verified & active",
+            "appointment_id": appt_id,
+            "pid": patient_id,
+            "order_id": order_id,
+            "payment_status": existing_appt.get("payment_status", "DONE"),
+            "paid_amount": existing_appt.get("paid_amount", 0.0),
+            "remaining_amount": existing_appt.get("remaining_amount", 0.0),
+            "payment_gateway": "CASHFREE",
+            "already_exists": True
+        }
+
+    # 2. Retrieve pending order draft if available
+    pending_order = await db["pending_orders"].find_one({"order_id": order_id})
+    
+    # Merge booking data & payment options
+    b_data = booking_data_override or (pending_order.get("booking_data") if pending_order else {}) or {}
+    pay_option = (payment_option_override or (pending_order.get("payment_option") if pending_order else "full")).lower()
+    
+    # Extract amounts safely (supporting both camelCase and snake_case keys in booking_data)
+    t_fee = total_fee_override if total_fee_override is not None else float(b_data.get("total_fee") or b_data.get("totalFee") or (pending_order.get("amount") if pending_order else 500.0) or 500.0)
+    p_amount = paid_amount_override if paid_amount_override is not None else float(b_data.get("paid_amount") or b_data.get("paidAmount") or (pending_order.get("amount") if pending_order else t_fee) or t_fee)
+    
+    is_full = pay_option == "full"
+    payment_status = "DONE" if is_full else "PENDING"
+    rem_amount = 0.0 if is_full else max(0.0, t_fee - p_amount)
+
+    now_ist = get_ist_now()
+
+    # Extract patient details carefully
+    patient_details = b_data.get("patientData") or b_data.get("patient_data") or {}
+    patient_name = b_data.get("patient_name") or b_data.get("patientName") or patient_details.get("name") or "Unknown Patient"
+    patient_phone = b_data.get("patient_phone") or b_data.get("patientPhone") or patient_details.get("phone") or ""
+    patient_age = int(b_data.get("patient_age") or b_data.get("patientAge") or patient_details.get("age") or 0)
+    patient_gender = b_data.get("patient_gender") or b_data.get("patientGender") or patient_details.get("gender") or "-"
+    
+    hosp_id = b_data.get("hospital_id") or b_data.get("hospitalId") or ""
+    hosp_name = b_data.get("hospital_name") or b_data.get("hospitalName") or ""
+    dept_id = b_data.get("department_id") or b_data.get("departmentId") or b_data.get("serviceId") or ""
+    dept_name = b_data.get("department_name") or b_data.get("departmentName") or b_data.get("serviceName") or "General"
+    doc_id = b_data.get("doctor_id") or b_data.get("doctorId") or ""
+    doc_name = b_data.get("doctor_name") or b_data.get("doctorName") or ""
+    selected_date = b_data.get("appointment_date") or b_data.get("selectedDate") or now_ist.strftime("%Y-%m-%d")
+    selected_slot = b_data.get("appointment_time") or b_data.get("selectedSlot") or "10:00 AM"
+
+    appt_dict = {
+        "hospital_id": hosp_id,
+        "hospital_name": hosp_name,
+        "department_id": dept_id,
+        "department_name": dept_name,
+        "doctor_id": doc_id,
+        "doctor_name": doc_name,
+        "patient_id": b_data.get("patient_id", ""),
+        "booking_for": b_data.get("booking_for") or patient_details.get("relationship") or "myself",
+        "patient_name": patient_name,
+        "patient_age": patient_age,
+        "patient_gender": patient_gender,
+        "patient_phone": patient_phone,
+        "appointment_date": selected_date,
+        "appointment_time": selected_slot,
+        "status": "BOOKED",
+        "booking_source": "CARESEVA_APP",
+        "payment_status": payment_status,
+        "payment_option": pay_option,
+        "payment_gateway": "CASHFREE",
+        "payment_order_id": order_id,
+        "payment_reference_id": reference_id or order_id,
+        "total_fee": t_fee,
+        "paid_amount": p_amount,
+        "remaining_amount": rem_amount,
+        "created_at": now_ist,
+        "updated_at": now_ist
+    }
+
+    result = await db["appointments"].insert_one(appt_dict)
+    appt_id = str(result.inserted_id)
+
+    # Sync into patients collection
+    existing_patient = None
+    if patient_phone:
+        existing_patient = await db["patients"].find_one({
+            "hospital_id": hosp_id,
+            "phone": patient_phone
+        })
+    if not existing_patient and patient_name:
+        existing_patient = await db["patients"].find_one({
+            "hospital_id": hosp_id,
+            "name": patient_name
+        })
+
+    assigned_pid = ""
+    if not existing_patient:
+        assigned_pid = await generate_unique_pid(db)
+        await db["patients"].insert_one({
+            "pid": assigned_pid,
+            "name": patient_name,
+            "phone": patient_phone,
+            "age": patient_age,
+            "gender": patient_gender,
+            "department_id": dept_id,
+            "department_name": dept_name,
+            "last_visit": selected_date,
+            "registration_source": "CARESEVA_APP",
+            "hospital_id": hosp_id,
+            "appointment_id": appt_id,
+            "payment_status": payment_status,
+            "payment_option": pay_option,
+            "total_fee": t_fee,
+            "paid_amount": p_amount,
+            "remaining_amount": rem_amount,
+            "created_at": now_ist,
+            "updated_at": now_ist
+        })
+    else:
+        assigned_pid = existing_patient.get("pid", "")
+        await db["patients"].update_one(
+            {"_id": existing_patient["_id"]},
+            {"$set": {
+                "last_visit": selected_date,
+                "payment_status": payment_status,
+                "payment_option": pay_option,
+                "total_fee": t_fee,
+                "paid_amount": p_amount,
+                "remaining_amount": rem_amount,
+                "appointment_id": appt_id,
+                "updated_at": now_ist
+            }}
+        )
+
+    # Ensure appointment holds PID
+    if assigned_pid:
+        await db["appointments"].update_one(
+            {"_id": ObjectId(appt_id)},
+            {"$set": {"patient_id": assigned_pid}}
+        )
+
+    # Update pending order status to CONFIRMED
+    if pending_order:
+        await db["pending_orders"].update_one(
+            {"order_id": order_id},
+            {"$set": {
+                "status": "CONFIRMED",
+                "appointment_id": appt_id,
+                "patient_id": assigned_pid,
+                "updated_at": now_ist
+            }}
+        )
+
+    return {
+        "status": "SUCCESS",
+        "message": "Payment verified and appointment confirmed successfully!",
+        "appointment_id": appt_id,
+        "pid": assigned_pid,
+        "order_id": order_id,
+        "payment_status": payment_status,
+        "paid_amount": p_amount,
+        "remaining_amount": rem_amount,
+        "payment_gateway": "CASHFREE",
+        "already_exists": False
+    }
+
+
 @router.post("/cashfree/verify-order")
 async def verify_cashfree_order(
     request: VerifyOrderRequest,
@@ -226,7 +429,6 @@ async def verify_cashfree_order(
     payment_option = request.payment_option.lower()
     
     is_paid = False
-    payment_mode = "CASHFREE_PG"
     reference_id = order_id
     current_status = "UNKNOWN"
 
@@ -263,116 +465,16 @@ async def verify_cashfree_order(
             detail=f"Payment status is '{current_status}'. Please complete your payment on Cashfree to confirm booking."
         )
 
-    # Calculation of payment fields
-    total_fee = float(request.total_fee)
-    paid_amount = float(request.paid_amount)
-    is_full = payment_option == "full"
-    payment_status = "DONE" if is_full else "PENDING"
-    remaining_amount = 0.0 if is_full else max(0.0, total_fee - paid_amount)
-
-    now_ist = get_ist_now()
-
-    # Create Appointment in DB
-    appt_dict = {
-        "hospital_id": booking_data.get("hospital_id", ""),
-        "department_id": booking_data.get("department_id", ""),
-        "department_name": booking_data.get("department_name", "General"),
-        "doctor_id": booking_data.get("doctor_id", ""),
-        "doctor_name": booking_data.get("doctor_name", ""),
-        "patient_id": booking_data.get("patient_id", ""),
-        "booking_for": booking_data.get("booking_for", "myself"),
-        "patient_name": booking_data.get("patient_name", "Unknown Patient"),
-        "patient_age": int(booking_data.get("patient_age") or 0),
-        "patient_gender": booking_data.get("patient_gender", "-"),
-        "patient_phone": booking_data.get("patient_phone", ""),
-        "appointment_date": booking_data.get("appointment_date", now_ist.strftime("%Y-%m-%d")),
-        "status": "BOOKED",
-        "booking_source": "CARESEVA_APP",
-        "payment_status": payment_status,
-        "payment_option": payment_option,
-        "payment_gateway": "CASHFREE",
-        "payment_order_id": order_id,
-        "payment_reference_id": reference_id,
-        "total_fee": total_fee,
-        "paid_amount": paid_amount,
-        "remaining_amount": remaining_amount,
-        "created_at": now_ist,
-        "updated_at": now_ist
-    }
-
-    result = await db["appointments"].insert_one(appt_dict)
-    appt_id = str(result.inserted_id)
-
-    # Sync into patients collection
-    existing_patient = None
-    if appt_dict["patient_phone"]:
-        existing_patient = await db["patients"].find_one({
-            "hospital_id": appt_dict["hospital_id"],
-            "phone": appt_dict["patient_phone"]
-        })
-    if not existing_patient and appt_dict["patient_name"]:
-        existing_patient = await db["patients"].find_one({
-            "hospital_id": appt_dict["hospital_id"],
-            "name": appt_dict["patient_name"]
-        })
-
-    assigned_pid = ""
-    if not existing_patient:
-        assigned_pid = await generate_unique_pid(db)
-        await db["patients"].insert_one({
-            "pid": assigned_pid,
-            "name": appt_dict["patient_name"],
-            "phone": appt_dict["patient_phone"],
-            "age": appt_dict["patient_age"],
-            "gender": appt_dict["patient_gender"],
-            "department_id": appt_dict["department_id"],
-            "department_name": appt_dict["department_name"],
-            "last_visit": now_ist.strftime("%Y-%m-%d"),
-            "registration_source": "CARESEVA_APP",
-            "hospital_id": appt_dict["hospital_id"],
-            "appointment_id": appt_id,
-            "payment_status": payment_status,
-            "payment_option": payment_option,
-            "total_fee": total_fee,
-            "paid_amount": paid_amount,
-            "remaining_amount": remaining_amount,
-            "created_at": now_ist,
-            "updated_at": now_ist
-        })
-    else:
-        assigned_pid = existing_patient.get("pid", "")
-        await db["patients"].update_one(
-            {"_id": existing_patient["_id"]},
-            {"$set": {
-                "last_visit": now_ist.strftime("%Y-%m-%d"),
-                "payment_status": payment_status,
-                "payment_option": payment_option,
-                "total_fee": total_fee,
-                "paid_amount": paid_amount,
-                "remaining_amount": remaining_amount,
-                "appointment_id": appt_id,
-                "updated_at": now_ist
-            }}
-        )
-
-    # Update appointment with resolved PID if available
-    if assigned_pid and not appt_dict.get("patient_id"):
-        await db["appointments"].update_one(
-            {"_id": ObjectId(appt_id)},
-            {"$set": {"patient_id": assigned_pid}}
-        )
-
-    return {
-        "status": "SUCCESS",
-        "message": "Payment verified and appointment confirmed successfully!",
-        "appointment_id": appt_id,
-        "pid": assigned_pid,
-        "order_id": order_id,
-        "payment_status": payment_status,
-        "paid_amount": paid_amount,
-        "remaining_amount": remaining_amount,
-        "payment_gateway": "CASHFREE"
-    }
+    # Process & confirm appointment booking idempotently
+    return await process_successful_payment(
+        db=db,
+        order_id=order_id,
+        booking_data_override=booking_data,
+        payment_option_override=payment_option,
+        paid_amount_override=float(request.paid_amount),
+        total_fee_override=float(request.total_fee),
+        reference_id=reference_id
+    )
 
 
 @router.post("/cashfree/webhook")
@@ -381,10 +483,10 @@ async def cashfree_webhook(
     db = Depends(get_db)
 ):
     """
-    Webhook handler for asynchronous payment updates from Cashfree.
+    Server-to-server Webhook handler for asynchronous payment updates from Cashfree.
+    Guarantees appointment creation even if patient closes their app or browser.
     """
     try:
-        body_bytes = await request.body()
         data = await request.json()
         print(f"[Cashfree Webhook Received]: {data.get('type')}")
 
@@ -394,17 +496,68 @@ async def cashfree_webhook(
         order_id = order_data.get("order_id")
 
         if event_type in ["PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID_WEBHOOK"] and order_id:
-            # Update appointment status in db
-            await db["appointments"].update_one(
-                {"payment_order_id": order_id},
-                {"$set": {
-                    "payment_webhook_received": True,
-                    "payment_status": "DONE",
-                    "updated_at": get_ist_now()
-                }}
+            # Process & confirm appointment idempotently via stored draft or payload
+            res = await process_successful_payment(
+                db=db,
+                order_id=order_id,
+                reference_id=str(order_data.get("cf_order_id") or order_id)
             )
+            print(f"[Cashfree Webhook Processed]: Appointment ID = {res.get('appointment_id')}, PID = {res.get('pid')}")
         
         return {"status": "OK"}
     except Exception as e:
         print(f"Error handling Cashfree webhook: {e}")
         return {"status": "ERROR", "detail": str(e)}
+
+
+@router.get("/cashfree/order-status/{order_id}")
+async def check_cashfree_order_status(
+    order_id: str,
+    db = Depends(get_db)
+):
+    """
+    Checks Cashfree order status & reconciles missing appointments on demand.
+    """
+    existing_appt = await db["appointments"].find_one({"payment_order_id": order_id})
+    if existing_appt:
+        return {
+            "status": "SUCCESS",
+            "payment_status": existing_appt.get("payment_status", "DONE"),
+            "appointment_id": str(existing_appt["_id"]),
+            "patient_id": existing_appt.get("patient_id", ""),
+            "reconciled": False
+        }
+
+    # Query Cashfree directly to see if paid
+    is_paid = False
+    if not ("TEST_" in settings.CASHFREE_APP_ID or order_id.startswith("sandbox_") or settings.CASHFREE_APP_ID == "YOUR_CASHFREE_APP_ID"):
+        base_url = get_cashfree_base_url()
+        headers = {
+            "x-client-id": settings.CASHFREE_APP_ID,
+            "x-client-secret": settings.CASHFREE_SECRET_KEY,
+            "x-api-version": settings.CASHFREE_API_VERSION,
+            "Content-Type": "application/json"
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{base_url}/orders/{order_id}", headers=headers)
+                if resp.status_code == 200 and resp.json().get("order_status") == "PAID":
+                    is_paid = True
+        except Exception as e:
+            print(f"Error querying Cashfree status for order {order_id}: {e}")
+
+    if is_paid:
+        res = await process_successful_payment(db=db, order_id=order_id)
+        return {
+            "status": "SUCCESS",
+            "payment_status": res.get("payment_status", "DONE"),
+            "appointment_id": res.get("appointment_id"),
+            "patient_id": res.get("pid"),
+            "reconciled": True
+        }
+
+    return {
+        "status": "PENDING",
+        "payment_status": "UNKNOWN",
+        "reconciled": False
+    }
