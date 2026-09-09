@@ -502,6 +502,70 @@ async def update_appointment_status(
     
     return {"message": "Status updated successfully", "status": new_status}
 
+@router.post("/{appointment_id}/consultation")
+async def save_appointment_consultation(
+    appointment_id: str,
+    consultation_data: dict,
+    db = Depends(get_db)
+):
+    """Save doctor diagnosis, prescription medications, notes, and follow-up date."""
+    appt = await db["appointments"].find_one({"_id": ObjectId(appointment_id)})
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    now_ist = get_ist_now()
+    prescription_obj = {
+        "diagnosis": consultation_data.get("diagnosis", ""),
+        "medicines": consultation_data.get("medicines", []),
+        "notes": consultation_data.get("notes", ""),
+        "follow_up_date": consultation_data.get("follow_up_date"),
+        "doctor_name": appt.get("doctor_name") or consultation_data.get("doctor_name"),
+        "doctor_id": appt.get("doctor_id"),
+        "prescribed_at": now_ist.isoformat(),
+    }
+
+    new_status = consultation_data.get("status", "COMPLETED")
+
+    update_fields = {
+        "prescription": prescription_obj,
+        "status": new_status,
+        "updated_at": now_ist
+    }
+
+    await db["appointments"].update_one(
+        {"_id": ObjectId(appointment_id)},
+        {"$set": update_fields}
+    )
+
+    # If patient has record in patients collection, also link to medical_history
+    patient_id = appt.get("patient_id")
+    hospital_id = appt.get("hospital_id")
+    if patient_id and hospital_id:
+        try:
+            await db["patients"].update_one(
+                {"hospital_id": hospital_id, "$or": [{"pid": patient_id}, {"_id": ObjectId(patient_id)}]},
+                {
+                    "$push": {
+                        "prescriptions": prescription_obj,
+                        "medical_history": {
+                            "date": now_ist.strftime("%Y-%m-%d"),
+                            "diagnosis": prescription_obj["diagnosis"],
+                            "doctor_name": prescription_obj["doctor_name"],
+                            "notes": prescription_obj["notes"]
+                        }
+                    }
+                }
+            )
+        except Exception:
+            pass
+
+    return {
+        "message": "Consultation and prescription saved successfully",
+        "appointment_id": appointment_id,
+        "status": new_status,
+        "prescription": prescription_obj
+    }
+
 @router.get("/patient/{patient_id}", response_model=List[AppointmentResponse])
 async def get_patient_appointments(patient_id: str, db = Depends(get_db)):
     cursor = db["appointments"].find({"patient_id": patient_id})

@@ -49,6 +49,17 @@ class HospitalBase(BaseModel):
     rejection_reason: Optional[str] = None
     verification_notes: Optional[str] = None
 
+    # Banking & Cashfree Payout Settlement Details
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_account_holder: Optional[str] = None
+    bank_name: Optional[str] = None
+    upi_id: Optional[str] = None
+    payout_beneficiary_id: Optional[str] = None
+    payout_beneficiary_status: Optional[str] = "UNREGISTERED" # UNREGISTERED, VERIFIED, FAILED
+    payout_preferred_mode: Optional[str] = "banktransfer" # banktransfer or upi
+
+
     @validator("gstin", pre=True, always=True)
     def validate_gstin(cls, v):
         if not v or not str(v).strip():
@@ -122,6 +133,15 @@ class HospitalUpdate(BaseModel):
     sla_accepted_at: Optional[str] = None
     rejection_reason: Optional[str] = None
     verification_notes: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_account_holder: Optional[str] = None
+    bank_name: Optional[str] = None
+    upi_id: Optional[str] = None
+    payout_beneficiary_id: Optional[str] = None
+    payout_beneficiary_status: Optional[str] = None
+    payout_preferred_mode: Optional[str] = None
+
 
 class HospitalInDB(HospitalBase):
     id: str

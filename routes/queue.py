@@ -320,7 +320,11 @@ async def get_patient_history(doctor_id: str, date: str = None, db = Depends(get
     return result
 
 @router.post("/{doctor_id}/complete")
-async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
+async def complete_current_patient(
+    doctor_id: str,
+    consultation: Optional[dict] = None,
+    db = Depends(get_db)
+):
     queue = await db["queues"].find_one({
         "doctor_id": doctor_id,
         "status": "ACTIVE"
@@ -329,18 +333,34 @@ async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Active queue not found")
         
     current_token = queue["current_token"]
+    now_ist = get_ist_now()
+
+    prescription_obj = None
+    if consultation:
+        prescription_obj = {
+            "diagnosis": consultation.get("diagnosis", ""),
+            "medicines": consultation.get("medicines", []),
+            "notes": consultation.get("notes", ""),
+            "follow_up_date": consultation.get("follow_up_date"),
+            "prescribed_at": now_ist.isoformat(),
+        }
+
     if current_token > 0:
         # Mark current token as COMPLETED
         entry = await db["queue_entries"].find_one_and_update(
             {"queue_id": str(queue["_id"]), "token_number": current_token},
-            {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
+            {"$set": {"status": "COMPLETED", "updated_at": now_ist}}
         )
         if entry:
+            appt_update = {"status": "COMPLETED", "updated_at": now_ist}
+            if prescription_obj:
+                appt_update["prescription"] = prescription_obj
+
             if entry.get("appointment_id"):
                 try:
                     await db["appointments"].update_one(
                         {"_id": ObjectId(entry["appointment_id"])},
-                        {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
+                        {"$set": appt_update}
                     )
                 except Exception:
                     pass
@@ -351,8 +371,27 @@ async def complete_current_patient(doctor_id: str, db = Depends(get_db)):
                         "patient_id": entry["patient_id"],
                         "status": {"$in": ["BOOKED", "WAITING", "CALLED", "IN_PROGRESS"]}
                     },
-                    {"$set": {"status": "COMPLETED", "updated_at": get_ist_now()}}
+                    {"$set": appt_update}
                 )
+
+            # Link prescription to patient record if available
+            if prescription_obj and entry.get("patient_id"):
+                try:
+                    await db["patients"].update_one(
+                        {"$or": [{"pid": entry["patient_id"]}, {"_id": ObjectId(entry["patient_id"])}]},
+                        {
+                            "$push": {
+                                "prescriptions": prescription_obj,
+                                "medical_history": {
+                                    "date": now_ist.strftime("%Y-%m-%d"),
+                                    "diagnosis": prescription_obj["diagnosis"],
+                                    "notes": prescription_obj["notes"]
+                                }
+                            }
+                        }
+                    )
+                except Exception:
+                    pass
         
     # Auto-advance to next token (as requested by user)
     new_token = current_token + 1

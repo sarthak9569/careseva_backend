@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 class QueueBase(BaseModel):
@@ -63,6 +63,21 @@ class QueueEntryResponse(QueueEntryBase):
     patient_gender: Optional[str] = None
     patient_phone: Optional[str] = None
 
+# Prescription / Consultation Details
+class PrescriptionItem(BaseModel):
+    medicine_name: str
+    dosage: Optional[str] = "1-0-1" # e.g. "1-0-1", "500mg"
+    timing: Optional[str] = "After Food" # "Before Food", "After Food"
+    duration: Optional[str] = "5 days" # "3 days", "5 days", "10 days"
+    instructions: Optional[str] = None
+
+class ConsultationSummary(BaseModel):
+    diagnosis: Optional[str] = None
+    medicines: Optional[List[Dict[str, Any]]] = []
+    notes: Optional[str] = None
+    follow_up_date: Optional[str] = None
+    prescribed_at: Optional[str] = None
+
 # Appointment Model
 class AppointmentBase(BaseModel):
     hospital_id: str
@@ -70,20 +85,24 @@ class AppointmentBase(BaseModel):
     doctor_id: str
     patient_id: str
     booking_for: str = "myself" # 'myself' or 'someone_else'
+    relationship: Optional[str] = "Myself"
     patient_name: Optional[str] = None
     patient_age: Optional[int] = None
     patient_gender: Optional[str] = None
     patient_phone: Optional[str] = None
     appointment_date: str # YYYY-MM-DD
-    status: str = "BOOKED" # BOOKED, COMPLETED, CANCELLED
+    time_slot: Optional[str] = "10:00 AM"
+    status: str = "BOOKED" # BOOKED, WAITING, CALLED, IN_PROGRESS, COMPLETED, CANCELLED
     booking_source: str = "CARESEVA_APP" # 'CARESEVA_APP' or 'HMS_DIRECT'
     department_name: Optional[str] = None
     doctor_name: Optional[str] = None
+    token_number: Optional[int] = None
     payment_status: str = "DONE" # DONE or PENDING
-    payment_option: Optional[str] = "full" # full or advance
+    payment_option: Optional[str] = "full" # full, advance, counter
     total_fee: Optional[float] = 500.0
     paid_amount: Optional[float] = 500.0
     remaining_amount: Optional[float] = 0.0
+    prescription: Optional[Dict[str, Any]] = None
 
 class AppointmentCreate(AppointmentBase):
     pass
@@ -96,3 +115,4 @@ class AppointmentInDB(AppointmentBase):
 class AppointmentResponse(AppointmentBase):
     id: str
     created_at: datetime
+
