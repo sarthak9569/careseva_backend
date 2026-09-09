@@ -73,7 +73,8 @@ async def register(user: UserCreate, db = Depends(get_db)):
             email=user.email,
             role=user.role,
             pid=unique_pid,
-            hospital_id=user_dict.get("hospital_id")
+            hospital_id=user_dict.get("hospital_id"),
+            phone=user_dict.get("phone")
         )
     except Exception as e:
         import traceback
@@ -143,7 +144,9 @@ async def login(user: UserLogin, db = Depends(get_db)):
         hop_id=hop_id,
         hospital_name=hospital_name,
         verification_status=v_status,
-        rejection_reason=rejection_reason
+        rejection_reason=rejection_reason,
+        pid=db_user.get("pid"),
+        phone=db_user.get("phone")
     )
 
 from pydantic import BaseModel
