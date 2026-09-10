@@ -292,24 +292,31 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
 async def get_patient_appointments(
     patient_id: Optional[str] = None,
     phone: Optional[str] = None,
+    booking_user_id: Optional[str] = None,
     db = Depends(get_db)
 ):
     """Retrieve all past and upcoming appointments for a patient with detailed metadata."""
     conditions = []
-    if patient_id and patient_id != "dummy_patient_123":
-        conditions.append({"patient_id": patient_id})
-    if phone:
-        clean_p = phone.strip().replace(" ", "").replace("-", "")
-        if clean_p.startswith("+91"):
-            clean_p = clean_p[3:]
-        conditions.append({"patient_phone": clean_p})
-        conditions.append({"patient_phone": phone})
-        try:
-            pt = await db["patients"].find_one({"phone": clean_p})
-            if pt and pt.get("pid"):
-                conditions.append({"patient_id": pt["pid"]})
-        except Exception:
-            pass
+    
+    if booking_user_id:
+        # Priority rule: If booking_user_id is provided, return all appointments booked by this user
+        conditions.append({"booking_user_id": booking_user_id})
+    else:
+        # Fallback to patient_id / phone if no booking_user_id provided
+        if patient_id and patient_id != "dummy_patient_123":
+            conditions.append({"patient_id": patient_id})
+        if phone:
+            clean_p = phone.strip().replace(" ", "").replace("-", "")
+            if clean_p.startswith("+91"):
+                clean_p = clean_p[3:]
+            conditions.append({"patient_phone": clean_p})
+            conditions.append({"patient_phone": phone})
+            try:
+                pt = await db["patients"].find_one({"phone": clean_p})
+                if pt and pt.get("pid"):
+                    conditions.append({"patient_id": pt["pid"]})
+            except Exception:
+                pass
 
     query = {}
     if conditions:

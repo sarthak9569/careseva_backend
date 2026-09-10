@@ -122,27 +122,32 @@ async def join_queue(entry: QueueEntryCreate, db = Depends(get_db)):
 async def get_patient_active_queue(
     patient_id: Optional[str] = None,
     phone: Optional[str] = None,
+    booking_user_id: Optional[str] = None,
     db = Depends(get_db)
 ):
     """Retrieve all active queue tokens and doctor room statuses for this patient across all departments."""
     conditions = []
-    if patient_id and patient_id != "dummy_patient_123":
-        conditions.append({"patient_id": patient_id})
-    if phone:
-        clean_p = phone.strip().replace(" ", "").replace("-", "")
-        if clean_p.startswith("+91"):
-            clean_p = clean_p[3:]
-        conditions.append({"phone": clean_p})
-        conditions.append({"patient_phone": clean_p})
-        conditions.append({"patient_phone": phone})
-        try:
-            pt = await db["patients"].find_one({"phone": clean_p})
-            if pt:
-                if pt.get("pid"):
-                    conditions.append({"patient_id": pt["pid"]})
-                conditions.append({"patient_id": str(pt["_id"])})
-        except Exception:
-            pass
+    
+    if booking_user_id:
+        conditions.append({"booking_user_id": booking_user_id})
+    else:
+        if patient_id and patient_id != "dummy_patient_123":
+            conditions.append({"patient_id": patient_id})
+        if phone:
+            clean_p = phone.strip().replace(" ", "").replace("-", "")
+            if clean_p.startswith("+91"):
+                clean_p = clean_p[3:]
+            conditions.append({"phone": clean_p})
+            conditions.append({"patient_phone": clean_p})
+            conditions.append({"patient_phone": phone})
+            try:
+                pt = await db["patients"].find_one({"phone": clean_p})
+                if pt:
+                    if pt.get("pid"):
+                        conditions.append({"patient_id": pt["pid"]})
+                    conditions.append({"patient_id": str(pt["_id"])})
+            except Exception:
+                pass
 
     query = {"status": {"$in": ["WAITING", "CALLED", "IN_PROGRESS"]}}
     if conditions:

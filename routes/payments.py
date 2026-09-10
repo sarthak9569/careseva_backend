@@ -439,6 +439,8 @@ async def process_successful_payment(
             )
             
             entry_dict = db_entry.dict(exclude={"id"})
+            if b_data.get("booking_user_id"):
+                entry_dict["booking_user_id"] = b_data.get("booking_user_id")
             await db["queue_entries"].insert_one(entry_dict)
             
             # Broadcast to websocket

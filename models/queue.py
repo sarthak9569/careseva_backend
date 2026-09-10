@@ -84,6 +84,7 @@ class AppointmentBase(BaseModel):
     department_id: str
     doctor_id: str
     patient_id: str
+    booking_user_id: Optional[str] = None
     booking_for: str = "myself" # 'myself' or 'someone_else'
     relationship: Optional[str] = "Myself"
     patient_name: Optional[str] = None
