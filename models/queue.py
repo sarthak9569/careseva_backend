@@ -6,6 +6,7 @@ class QueueBase(BaseModel):
     hospital_id: str
     department_id: str
     doctor_id: str
+    queue_date: str # YYYY-MM-DD
     status: str = "ACTIVE" # ACTIVE, PAUSED, CLOSED
 
 class QueueCreate(QueueBase):
@@ -39,6 +40,7 @@ class QueueEntryCreate(BaseModel):
     patient_name: str = "Unknown"
     appointment_id: Optional[str] = None
     patient_phone: Optional[str] = None
+    appointment_date: Optional[str] = None
 
 class QueueEntryInDB(QueueEntryBase):
     id: str

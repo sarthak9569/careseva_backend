@@ -63,9 +63,11 @@ async def websocket_endpoint(websocket: WebSocket, doctor_id: str):
 @router.post("/join", response_model=QueueEntryResponse)
 async def join_queue(entry: QueueEntryCreate, db = Depends(get_db)):
     # Get or create the queue for this doctor today
+    queue_date_str = entry.appointment_date or get_ist_now().strftime("%Y-%m-%d")
     queue = await db["queues"].find_one({
         "hospital_id": entry.hospital_id,
         "doctor_id": entry.doctor_id,
+        "queue_date": queue_date_str,
         "status": "ACTIVE"
     })
     
@@ -76,6 +78,7 @@ async def join_queue(entry: QueueEntryCreate, db = Depends(get_db)):
             hospital_id=entry.hospital_id,
             department_id=entry.department_id,
             doctor_id=entry.doctor_id,
+            queue_date=queue_date_str,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             total_tokens=0,
@@ -224,7 +227,8 @@ async def get_patient_active_queue(
             "total_tokens": total_tokens,
             "status": entry.get("status", "WAITING"),
             "patient_name": entry.get("patient_name", ""),
-            "appointment_id": entry.get("appointment_id")
+            "appointment_id": entry.get("appointment_id"),
+            "appointment_date": entry.get("appointment_date") or (queue.get("queue_date") if queue else None)
         })
 
     first = active_list[0] if active_list else {}
@@ -241,13 +245,16 @@ async def get_patient_active_queue(
         "current_token": first.get("current_token", 0),
         "total_tokens": first.get("total_tokens", 0),
         "status": first.get("status", "WAITING"),
-        "patient_name": first.get("patient_name", "")
+        "patient_name": first.get("patient_name", ""),
+        "appointment_date": first.get("appointment_date")
     }
 
 @router.get("/{doctor_id}/entries", response_model=List[QueueEntryResponse])
-async def get_queue_entries(doctor_id: str, db = Depends(get_db)):
+async def get_queue_entries(doctor_id: str, date: str = None, db = Depends(get_db)):
+    target_date = date or get_ist_now().strftime("%Y-%m-%d")
     queue = await db["queues"].find_one({
         "doctor_id": doctor_id,
+        "queue_date": target_date,
         "status": "ACTIVE"
     })
     if not queue:
@@ -327,11 +334,14 @@ async def get_patient_history(doctor_id: str, date: str = None, db = Depends(get
 @router.post("/{doctor_id}/complete")
 async def complete_current_patient(
     doctor_id: str,
+    date: str = None,
     consultation: Optional[dict] = None,
     db = Depends(get_db)
 ):
+    target_date = date or get_ist_now().strftime("%Y-%m-%d")
     queue = await db["queues"].find_one({
         "doctor_id": doctor_id,
+        "queue_date": target_date,
         "status": "ACTIVE"
     })
     if not queue:
@@ -443,9 +453,11 @@ async def complete_current_patient(
     return {"status": "success", "current_token": new_token}
 
 @router.post("/{doctor_id}/next")
-async def call_next_patient(doctor_id: str, db = Depends(get_db)):
+async def call_next_patient(doctor_id: str, date: str = None, db = Depends(get_db)):
+    target_date = date or get_ist_now().strftime("%Y-%m-%d")
     queue = await db["queues"].find_one({
         "doctor_id": doctor_id,
+        "queue_date": target_date,
         "status": "ACTIVE"
     })
     if not queue:
@@ -492,9 +504,11 @@ async def call_next_patient(doctor_id: str, db = Depends(get_db)):
     return {"status": "success", "current_token": new_token}
 
 @router.get("/{doctor_id}/status")
-async def get_queue_status(doctor_id: str, db = Depends(get_db)):
+async def get_queue_status(doctor_id: str, date: str = None, db = Depends(get_db)):
+    target_date = date or get_ist_now().strftime("%Y-%m-%d")
     queue = await db["queues"].find_one({
         "doctor_id": doctor_id,
+        "queue_date": target_date,
         "status": "ACTIVE"
     })
     if not queue:

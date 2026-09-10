@@ -398,6 +398,7 @@ async def process_successful_payment(
             queue = await db["queues"].find_one({
                 "hospital_id": hosp_id,
                 "doctor_id": doc_id,
+                "queue_date": selected_date,
                 "status": "ACTIVE"
             })
             
@@ -407,6 +408,7 @@ async def process_successful_payment(
                     hospital_id=hosp_id,
                     department_id=dept_id,
                     doctor_id=doc_id,
+                    queue_date=selected_date,
                     created_at=now_ist,
                     updated_at=now_ist,
                     total_tokens=0,

@@ -228,9 +228,12 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
     except Exception as e:
         print(f"Error syncing patient to registry: {e}")
 
+    queue_date_str = appt_data.get("appointment_date", now_ist.strftime("%Y-%m-%d"))
+
     queue = await db["queues"].find_one({
         "hospital_id": hospital_id,
         "doctor_id": doctor_id,
+        "queue_date": queue_date_str,
         "status": "ACTIVE"
     })
     
@@ -242,6 +245,7 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
             hospital_id=hospital_id,
             department_id=department_id,
             doctor_id=doctor_id,
+            queue_date=queue_date_str,
             created_at=get_ist_now(),
             updated_at=get_ist_now(),
             total_tokens=0,
