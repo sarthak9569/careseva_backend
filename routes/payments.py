@@ -88,7 +88,7 @@ async def create_cashfree_order(
             "customer_phone": clean_phone
         },
         "order_meta": {
-            "return_url": f"https://careseva.in/payment-callback?order_id={order_id}"
+            "return_url": f"https://careseva.co.in/payment-callback?order_id={order_id}"
         },
         "order_note": request.order_note
     }
