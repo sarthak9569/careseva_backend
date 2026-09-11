@@ -183,7 +183,6 @@ async def get_hospital_admissions(
 
 @router.get("/hospital/{hospital_id}/overview")
 async def get_admissions_department_overview(hospital_id: str, db = Depends(get_db)):
-    await _seed_initial_admissions_if_empty(hospital_id, db)
 
     dept_cursor = db["departments"].find({"hospital_id": hospital_id})
     departments = await dept_cursor.to_list(length=100)
