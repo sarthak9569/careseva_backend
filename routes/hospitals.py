@@ -83,15 +83,94 @@ async def register_hospital(hospital: HospitalCreate, db = Depends(get_db)):
             detail=f"Database error: {str(e)}"
         )
 
+import math
+from typing import Optional
+
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate distance in km between two lat/lng points using Haversine formula."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return round(R * c, 1)
+
 @router.get("/", response_model=List[HospitalResponse])
-async def get_active_hospitals(db = Depends(get_db)):
-    cursor = db["hospitals"].find({"status": "ACTIVE", "verification_status": "APPROVED"})
+async def get_active_hospitals(
+    speciality: Optional[str] = None,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    city: Optional[str] = None,
+    pincode: Optional[str] = None,
+    db = Depends(get_db)
+):
+    query = {"status": "ACTIVE", "verification_status": "APPROVED"}
+    
+    if city and city.strip():
+        query["city"] = {"$regex": f"^{city.strip()}$", "$options": "i"}
+    if pincode and pincode.strip():
+        query["pincode"] = pincode.strip()
+
+    # If speciality/department filter provided, find matching hospital_ids from departments & doctors
+    if speciality and speciality.strip():
+        spec_clean = speciality.strip()
+        dept_cursor = db["departments"].find({
+            "$or": [
+                {"name": {"$regex": spec_clean, "$options": "i"}},
+                {"specialty": {"$regex": spec_clean, "$options": "i"}}
+            ]
+        })
+        depts = await dept_cursor.to_list(length=500)
+        matching_hosp_ids = {d["hospital_id"] for d in depts if d.get("hospital_id")}
+        
+        doc_cursor = db["doctors"].find({
+            "specialization": {"$regex": spec_clean, "$options": "i"}
+        })
+        docs = await doc_cursor.to_list(length=500)
+        for doc in docs:
+            if doc.get("hospital_id"):
+                matching_hosp_ids.add(doc["hospital_id"])
+        
+        or_conditions = [
+            {"specialties": {"$regex": spec_clean, "$options": "i"}},
+            {"facility_type": {"$regex": spec_clean, "$options": "i"}},
+            {"name": {"$regex": spec_clean, "$options": "i"}}
+        ]
+        if matching_hosp_ids:
+            obj_ids = []
+            str_ids = []
+            for hid in matching_hosp_ids:
+                str_ids.append(hid)
+                try:
+                    obj_ids.append(ObjectId(hid))
+                except Exception:
+                    pass
+            or_conditions.append({"_id": {"$in": obj_ids}})
+            or_conditions.append({"hop_id": {"$in": str_ids}})
+
+        query["$or"] = or_conditions
+
+    cursor = db["hospitals"].find(query)
     hospitals = await cursor.to_list(length=100)
     
     result = []
     for h in hospitals:
-        h["id"] = str(h["_id"])
+        h_id = str(h["_id"])
+        h["id"] = h_id
+        
+        if lat is not None and lng is not None:
+            h_lat = h.get("latitude")
+            h_lng = h.get("longitude")
+            if h_lat is not None and h_lng is not None:
+                h["distance_km"] = haversine_distance(lat, lng, float(h_lat), float(h_lng))
+            else:
+                h["distance_km"] = 3.5
+
         result.append(HospitalResponse(**h))
+    
+    if lat is not None and lng is not None:
+        result.sort(key=lambda item: item.distance_km if item.distance_km is not None else 9999.0)
+
     return result
 
 @router.get("/reverse-geocode")

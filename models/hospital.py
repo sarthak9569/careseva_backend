@@ -17,6 +17,7 @@ class HospitalBase(BaseModel):
     longitude: Optional[float] = None
     specialties: List[str] = []
     hop_id: Optional[str] = None
+    distance_km: Optional[float] = None
     
     # Statutory & Legal Credentials for CareSeva Em-panelment
     legal_entity_name: Optional[str] = None # e.g. "Apex Healthcare Pvt Ltd" or "Shri Ram Trust"
