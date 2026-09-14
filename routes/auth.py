@@ -239,11 +239,13 @@ class VerifyOtpAndRegisterRequest(BaseModel):
     phone: str
     otp: str
     name: str
+    gender: Optional[str] = None
+    blood_group: Optional[str] = None
+    terms_accepted: Optional[bool] = False
     email: Optional[str] = None
     password: Optional[str] = "careseva123"
     dob: Optional[str] = None
     age: Optional[int] = None
-    blood_group: Optional[str] = None
 
 class LoginWithOtpRequest(BaseModel):
     phone: str
@@ -257,22 +259,40 @@ class UpdateProfileRequest(BaseModel):
     phone: Optional[str] = None
     patient_id: Optional[str] = None
     name: Optional[str] = None
+    gender: Optional[str] = None
     dob: Optional[str] = None
     age: Optional[int] = None
     blood_group: Optional[str] = None
 
+def clean_phone_number(phone_str: str) -> str:
+    clean_p = phone_str.strip().replace(" ", "").replace("-", "")
+    if clean_p.startswith("+91"):
+        clean_p = clean_p[3:]
+    elif clean_p.startswith("91") and len(clean_p) == 12:
+        clean_p = clean_p[2:]
+    return clean_p
+
 @router.post("/send-otp")
 async def send_otp(req: SendOtpRequest, db = Depends(get_db)):
-    clean_phone = req.phone.strip().replace(" ", "").replace("-", "")
-    if clean_phone.startswith("+91"):
-        clean_phone = clean_phone[3:]
-    elif clean_phone.startswith("91") and len(clean_phone) == 12:
-        clean_phone = clean_phone[2:]
-        
+    clean_phone = clean_phone_number(req.phone)
     if len(clean_phone) < 10:
         raise HTTPException(status_code=400, detail="Invalid phone number. Must be at least 10 digits.")
 
-    # Generate 6-digit OTP
+    # Check if existing user in users or patients collection
+    existing_user = await db["users"].find_one({"phone": clean_phone})
+    if not existing_user:
+        existing_user = await db["patients"].find_one({"phone": clean_phone})
+
+    # If mobile does NOT exist in database, do NOT send login OTP and notify frontend to register
+    if not existing_user:
+        return {
+            "status": "register_required",
+            "user_exists": False,
+            "message": "REGISTER_REQUIRED",
+            "detail": "Thank you for choosing CareSeva, please register first."
+        }
+
+    # Generate 6-digit OTP for existing user
     otp_code = str(random.randint(100000, 999999))
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
@@ -290,18 +310,65 @@ async def send_otp(req: SendOtpRequest, db = Depends(get_db)):
 
     return {
         "status": "success",
+        "user_exists": True,
         "message": f"OTP sent successfully to +91 {clean_phone}",
-        "otp": otp_code, # Provided for instant testing/demo in app
+        "otp": otp_code,
+        "demo_otp": "123456"
+    }
+
+@router.post("/send-registration-otp")
+async def send_registration_otp(req: SendOtpRequest, db = Depends(get_db)):
+    clean_phone = clean_phone_number(req.phone)
+    if len(clean_phone) < 10:
+        raise HTTPException(status_code=400, detail="Invalid phone number. Must be at least 10 digits.")
+
+    # Check if user already exists
+    existing_user = await db["users"].find_one({"phone": clean_phone})
+    if not existing_user:
+        existing_user = await db["patients"].find_one({"phone": clean_phone})
+
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="An account is already registered with this mobile number. Please log in instead."
+        )
+
+    # Generate 6-digit OTP
+    otp_code = str(random.randint(100000, 999999))
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+
+    await db["otps"].update_one(
+        {"phone": clean_phone},
+        {"$set": {
+            "phone": clean_phone,
+            "otp": otp_code,
+            "created_at": now_ist,
+            "expires_at": now_ist + timedelta(minutes=10)
+        }},
+        upsert=True
+    )
+
+    return {
+        "status": "success",
+        "user_exists": False,
+        "message": f"Registration OTP sent successfully to +91 {clean_phone}",
+        "otp": otp_code,
         "demo_otp": "123456"
     }
 
 @router.post("/verify-otp-and-register", response_model=UserResponse)
 async def verify_otp_and_register(req: VerifyOtpAndRegisterRequest, db = Depends(get_db)):
-    clean_phone = req.phone.strip().replace(" ", "").replace("-", "")
-    if clean_phone.startswith("+91"):
-        clean_phone = clean_phone[3:]
-    elif clean_phone.startswith("91") and len(clean_phone) == 12:
-        clean_phone = clean_phone[2:]
+    clean_phone = clean_phone_number(req.phone)
+    if len(clean_phone) < 10:
+        raise HTTPException(status_code=400, detail="Invalid phone number.")
+
+    # Mandatory Gender Validation
+    if not req.gender or not req.gender.strip():
+        raise HTTPException(status_code=400, detail="Gender is mandatory for registration. Please select an option.")
+
+    # Mandatory Terms Acceptance Validation
+    if not req.terms_accepted:
+        raise HTTPException(status_code=400, detail="You must accept the Terms & Conditions to complete registration.")
 
     # Check OTP (accept demo '123456' / '1234' or saved OTP)
     is_valid = req.otp.strip() in ["123456", "1234"]
@@ -311,7 +378,15 @@ async def verify_otp_and_register(req: VerifyOtpAndRegisterRequest, db = Depends
             is_valid = True
 
     if not is_valid:
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP. Please try again.")
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP code. Please try again.")
+
+    # Backend Duplicate Registration Check
+    existing_user = await db["users"].find_one({"phone": clean_phone})
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="An account with this mobile number already exists. Please proceed through Login."
+        )
 
     from core.pid_generator import generate_unique_pid
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
@@ -321,87 +396,57 @@ async def verify_otp_and_register(req: VerifyOtpAndRegisterRequest, db = Depends
         calculated_age = calculate_age_from_dob(req.dob)
 
     email = req.email.strip() if req.email and req.email.strip() else f"patient_{clean_phone[-6:]}@careseva.com"
+    unique_pid = await generate_unique_pid(db)
+    hashed_password = get_password_hash(req.password or "careseva123")
 
-    # Check if user already exists with this phone or email
-    existing_user = await db["users"].find_one({
-        "$or": [{"phone": clean_phone}, {"email": email}]
-    })
+    user_doc = {
+        "name": req.name.strip(),
+        "email": email,
+        "phone": clean_phone,
+        "dob": req.dob.strip() if req.dob else None,
+        "age": calculated_age,
+        "gender": req.gender.strip(),
+        "blood_group": req.blood_group.strip() if req.blood_group and req.blood_group.strip() != "Unknown / Not Known" else None,
+        "terms_accepted": True,
+        "terms_accepted_at": now_ist.isoformat(),
+        "otp_verified": True,
+        "hashed_password": hashed_password,
+        "role": "patient",
+        "pid": unique_pid,
+        "hospital_id": "6a8ea49ef17ddb14088aa5f7",
+        "created_at": now_ist,
+        "updated_at": now_ist
+    }
 
-    unique_pid = None
-    if existing_user:
-        unique_pid = existing_user.get("pid")
-        if not unique_pid:
-            unique_pid = await generate_unique_pid(db)
-        
-        user_updates = {
-            "name": req.name.strip(),
-            "phone": clean_phone,
-            "email": email,
-            "pid": unique_pid
-        }
-        if req.dob:
-            user_updates["dob"] = req.dob.strip()
-        if calculated_age is not None:
-            user_updates["age"] = calculated_age
-        if req.blood_group:
-            user_updates["blood_group"] = req.blood_group.strip()
-
-        await db["users"].update_one(
-            {"_id": existing_user["_id"]},
-            {"$set": user_updates}
-        )
-        user_id = str(existing_user["_id"])
-    else:
-        unique_pid = await generate_unique_pid(db)
-        hashed_password = get_password_hash(req.password or "careseva123")
-        res = await db["users"].insert_one({
-            "name": req.name.strip(),
-            "email": email,
-            "phone": clean_phone,
-            "dob": req.dob.strip() if req.dob else None,
-            "age": calculated_age,
-            "blood_group": req.blood_group.strip() if req.blood_group else None,
-            "hashed_password": hashed_password,
-            "role": "patient",
-            "pid": unique_pid,
-            "hospital_id": "6a8ea49ef17ddb14088aa5f7",
-            "created_at": now_ist
-        })
-        user_id = str(res.inserted_id)
+    res = await db["users"].insert_one(user_doc)
+    user_id = str(res.inserted_id)
 
     # Sync or update to central patients registry
     existing_patient = await db["patients"].find_one({"phone": clean_phone})
-    if not existing_patient:
-        await db["patients"].insert_one({
-            "pid": unique_pid,
-            "name": req.name.strip(),
-            "email": email,
-            "phone": clean_phone,
-            "dob": req.dob.strip() if req.dob else None,
-            "age": calculated_age,
-            "blood_group": req.blood_group.strip() if req.blood_group else None,
-            "registration_source": "CARESEVA_APP",
-            "hospital_id": "6a8ea49ef17ddb14088aa5f7",
-            "created_at": now_ist,
-            "updated_at": now_ist
-        })
-    else:
-        patient_updates = {
-            "name": req.name.strip(),
-            "email": email,
-            "pid": unique_pid,
-            "updated_at": now_ist
-        }
-        if req.dob:
-            patient_updates["dob"] = req.dob.strip()
-        if calculated_age is not None:
-            patient_updates["age"] = calculated_age
-        if req.blood_group:
-            patient_updates["blood_group"] = req.blood_group.strip()
+    patient_doc = {
+        "pid": unique_pid,
+        "name": req.name.strip(),
+        "email": email,
+        "phone": clean_phone,
+        "dob": req.dob.strip() if req.dob else None,
+        "age": calculated_age,
+        "gender": req.gender.strip(),
+        "blood_group": req.blood_group.strip() if req.blood_group and req.blood_group.strip() != "Unknown / Not Known" else None,
+        "terms_accepted": True,
+        "terms_accepted_at": now_ist.isoformat(),
+        "otp_verified": True,
+        "registration_source": "CARESEVA_APP",
+        "hospital_id": "6a8ea49ef17ddb14088aa5f7",
+        "created_at": now_ist,
+        "updated_at": now_ist
+    }
 
+    if not existing_patient:
+        await db["patients"].insert_one(patient_doc)
+    else:
         await db["patients"].update_one(
             {"_id": existing_patient["_id"]},
-            {"$set": patient_updates}
+            {"$set": patient_doc}
         )
 
     return UserResponse(
@@ -413,7 +458,11 @@ async def verify_otp_and_register(req: VerifyOtpAndRegisterRequest, db = Depends
         pid=unique_pid,
         dob=req.dob.strip() if req.dob else None,
         age=calculated_age,
-        blood_group=req.blood_group.strip() if req.blood_group else None,
+        gender=req.gender.strip(),
+        blood_group=req.blood_group.strip() if req.blood_group and req.blood_group.strip() != "Unknown / Not Known" else None,
+        terms_accepted=True,
+        terms_accepted_at=now_ist.isoformat(),
+        otp_verified=True,
         hospital_id="6a8ea49ef17ddb14088aa5f7"
     )
 
@@ -421,7 +470,6 @@ async def verify_otp_and_register(req: VerifyOtpAndRegisterRequest, db = Depends
 async def verify_hospital_password(req: VerifyHospitalPasswordRequest, db = Depends(get_db)):
     clean_hosp_id = req.hospital_id.strip()
     
-    # 1. Check hospital in hospitals collection
     hospital = None
     try:
         hospital = await db["hospitals"].find_one({"_id": ObjectId(clean_hosp_id)})
@@ -432,7 +480,6 @@ async def verify_hospital_password(req: VerifyHospitalPasswordRequest, db = Depe
         if verify_password(req.password, hospital["hashed_password"]):
             return {"valid": True, "message": "Password verified successfully"}
 
-    # 2. Check hospital_admin / admin user assigned to this hospital
     user = await db["users"].find_one({
         "hospital_id": clean_hosp_id,
         "role": {"$in": ["admin", "hospital_admin"]}
@@ -441,7 +488,6 @@ async def verify_hospital_password(req: VerifyHospitalPasswordRequest, db = Depe
         if verify_password(req.password, user["hashed_password"]):
             return {"valid": True, "message": "Password verified successfully"}
 
-    # 3. Also check any admin user in general
     any_admin = await db["users"].find_one({"role": {"$in": ["admin", "hospital_admin"]}})
     if any_admin and any_admin.get("hashed_password"):
         if verify_password(req.password, any_admin["hashed_password"]):
@@ -449,13 +495,66 @@ async def verify_hospital_password(req: VerifyHospitalPasswordRequest, db = Depe
 
     raise HTTPException(status_code=400, detail="Invalid hospital password. Please enter the password used during registration.")
 
+@router.get("/profile", response_model=UserResponse)
+async def get_profile(phone: Optional[str] = None, patient_id: Optional[str] = None, db = Depends(get_db)):
+    conditions = []
+    if phone:
+        clean_p = clean_phone_number(phone)
+        conditions.append({"phone": clean_p})
+    if patient_id:
+        conditions.append({"pid": patient_id})
+        try:
+            conditions.append({"_id": ObjectId(patient_id)})
+        except Exception:
+            pass
+
+    if not conditions:
+        raise HTTPException(status_code=400, detail="Must provide phone or patient_id")
+
+    user = await db["users"].find_one({"$or": conditions})
+    if not user:
+        pt = await db["patients"].find_one({"$or": conditions})
+        if not pt:
+            raise HTTPException(status_code=404, detail="User profile not found")
+        return UserResponse(
+            id=str(pt["_id"]),
+            name=pt.get("name", "Registered Patient"),
+            email=pt.get("email"),
+            phone=pt.get("phone"),
+            role="patient",
+            pid=pt.get("pid"),
+            dob=pt.get("dob"),
+            age=pt.get("age", 0),
+            gender=pt.get("gender"),
+            blood_group=pt.get("blood_group"),
+            terms_accepted=pt.get("terms_accepted", True),
+            terms_accepted_at=pt.get("terms_accepted_at"),
+            otp_verified=pt.get("otp_verified", True),
+            hospital_id=pt.get("hospital_id", "6a8ea49ef17ddb14088aa5f7")
+        )
+
+    return UserResponse(
+        id=str(user["_id"]),
+        name=user.get("name", "Registered Patient"),
+        email=user.get("email"),
+        phone=user.get("phone"),
+        role=user.get("role", "patient"),
+        pid=user.get("pid"),
+        dob=user.get("dob"),
+        age=user.get("age", 0),
+        gender=user.get("gender"),
+        blood_group=user.get("blood_group"),
+        terms_accepted=user.get("terms_accepted", True),
+        terms_accepted_at=user.get("terms_accepted_at"),
+        otp_verified=user.get("otp_verified", True),
+        hospital_id=user.get("hospital_id", "6a8ea49ef17ddb14088aa5f7")
+    )
+
 @router.patch("/profile")
 async def update_profile(req: UpdateProfileRequest, db = Depends(get_db)):
     conditions = []
     if req.phone:
-        clean_p = req.phone.strip().replace(" ", "").replace("-", "")
-        if clean_p.startswith("+91"):
-            clean_p = clean_p[3:]
+        clean_p = clean_phone_number(req.phone)
         conditions.append({"phone": clean_p})
     if req.patient_id:
         conditions.append({"pid": req.patient_id})
@@ -470,13 +569,16 @@ async def update_profile(req: UpdateProfileRequest, db = Depends(get_db)):
     update_fields = {}
     if req.name:
         update_fields["name"] = req.name.strip()
+    if req.gender:
+        update_fields["gender"] = req.gender.strip()
     if req.dob:
         update_fields["dob"] = req.dob.strip()
         update_fields["age"] = calculate_age_from_dob(req.dob)
     elif req.age is not None:
         update_fields["age"] = req.age
     if req.blood_group is not None:
-        update_fields["blood_group"] = req.blood_group.strip()
+        clean_bg = req.blood_group.strip()
+        update_fields["blood_group"] = clean_bg if clean_bg != "Unknown / Not Known" else None
 
     if not update_fields:
         return {"status": "success", "message": "Nothing to update"}
@@ -491,11 +593,7 @@ async def update_profile(req: UpdateProfileRequest, db = Depends(get_db)):
 
 @router.post("/login-with-otp", response_model=UserResponse)
 async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
-    clean_phone = req.phone.strip().replace(" ", "").replace("-", "")
-    if clean_phone.startswith("+91"):
-        clean_phone = clean_phone[3:]
-    elif clean_phone.startswith("91") and len(clean_phone) == 12:
-        clean_phone = clean_phone[2:]
+    clean_phone = clean_phone_number(req.phone)
 
     is_valid = req.otp.strip() in ["123456", "1234"]
     if not is_valid:
@@ -512,7 +610,6 @@ async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
         # Also check patients registry
         pt = await db["patients"].find_one({"phone": clean_phone})
         if pt:
-            # Auto-create user account from patient registry
             from core.pid_generator import generate_unique_pid
             pid = pt.get("pid") or await generate_unique_pid(db)
             email = pt.get("email") or f"patient_{clean_phone[-6:]}@careseva.com"
@@ -523,6 +620,12 @@ async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
                 "hashed_password": get_password_hash("careseva123"),
                 "role": "patient",
                 "pid": pid,
+                "dob": pt.get("dob"),
+                "age": pt.get("age", 0),
+                "gender": pt.get("gender"),
+                "blood_group": pt.get("blood_group"),
+                "terms_accepted": True,
+                "otp_verified": True,
                 "hospital_id": pt.get("hospital_id", "6a8ea49ef17ddb14088aa5f7")
             })
             return UserResponse(
@@ -532,6 +635,12 @@ async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
                 phone=clean_phone,
                 role="patient",
                 pid=pid,
+                dob=pt.get("dob"),
+                age=pt.get("age", 0),
+                gender=pt.get("gender"),
+                blood_group=pt.get("blood_group"),
+                terms_accepted=True,
+                otp_verified=True,
                 hospital_id=pt.get("hospital_id", "6a8ea49ef17ddb14088aa5f7")
             )
         raise HTTPException(status_code=404, detail="No account registered with this phone number.")
@@ -539,9 +648,16 @@ async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
     return UserResponse(
         id=str(db_user["_id"]),
         name=db_user["name"],
-        email=db_user["email"],
+        email=db_user.get("email"),
         phone=db_user.get("phone", clean_phone),
         role=db_user.get("role", "patient"),
         pid=db_user.get("pid"),
+        dob=db_user.get("dob"),
+        age=db_user.get("age", 0),
+        gender=db_user.get("gender"),
+        blood_group=db_user.get("blood_group"),
+        terms_accepted=db_user.get("terms_accepted", True),
+        terms_accepted_at=db_user.get("terms_accepted_at"),
+        otp_verified=db_user.get("otp_verified", True),
         hospital_id=db_user.get("hospital_id")
     )
