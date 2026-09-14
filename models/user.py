@@ -67,3 +67,5 @@ class UserResponse(BaseModel):
     hospital_name: Optional[str] = None
     verification_status: Optional[str] = "APPROVED"
     rejection_reason: Optional[str] = None
+    access_token: Optional[str] = None
+    token_type: Optional[str] = "bearer"

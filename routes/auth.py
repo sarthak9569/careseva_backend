@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from passlib.context import CryptContext
 from models.user import UserCreate, UserInDB, UserResponse, UserLogin
 from database import get_db
+from core.security import get_current_user, get_optional_current_user, create_access_token
 
 router = APIRouter()
 import bcrypt
@@ -135,6 +136,14 @@ async def login(user: UserLogin, db = Depends(get_db)):
                     detail="HOSPITAL_SUSPENDED: This facility has been temporarily suspended by CareSeva Superadmin."
                 )
         
+        from core.security import create_access_token
+        token = create_access_token({
+            "sub": str(db_user["_id"]),
+            "phone": db_user.get("phone", ""),
+            "pid": db_user.get("pid", ""),
+            "role": db_user.get("role", "patient")
+        })
+        
     return UserResponse(
         id=str(db_user["_id"]),
         name=db_user["name"],
@@ -146,7 +155,9 @@ async def login(user: UserLogin, db = Depends(get_db)):
         verification_status=v_status,
         rejection_reason=rejection_reason,
         pid=db_user.get("pid"),
-        phone=db_user.get("phone")
+        phone=db_user.get("phone"),
+        access_token=token,
+        token_type="bearer"
     )
 
 from pydantic import BaseModel
@@ -388,6 +399,7 @@ async def verify_otp_and_register(req: VerifyOtpAndRegisterRequest, db = Depends
             detail="An account with this mobile number already exists. Please proceed through Login."
         )
 
+    from core.security import create_access_token, get_current_user, get_optional_current_user
     from core.pid_generator import generate_unique_pid
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
@@ -420,6 +432,13 @@ async def verify_otp_and_register(req: VerifyOtpAndRegisterRequest, db = Depends
 
     res = await db["users"].insert_one(user_doc)
     user_id = str(res.inserted_id)
+
+    token = create_access_token({
+        "sub": user_id,
+        "phone": clean_phone,
+        "pid": unique_pid,
+        "role": "patient"
+    })
 
     # Sync or update to central patients registry
     existing_patient = await db["patients"].find_one({"phone": clean_phone})
@@ -463,7 +482,9 @@ async def verify_otp_and_register(req: VerifyOtpAndRegisterRequest, db = Depends
         terms_accepted=True,
         terms_accepted_at=now_ist.isoformat(),
         otp_verified=True,
-        hospital_id="6a8ea49ef17ddb14088aa5f7"
+        hospital_id="6a8ea49ef17ddb14088aa5f7",
+        access_token=token,
+        token_type="bearer"
     )
 
 @router.post("/verify-hospital-password")
@@ -496,20 +517,43 @@ async def verify_hospital_password(req: VerifyHospitalPasswordRequest, db = Depe
     raise HTTPException(status_code=400, detail="Invalid hospital password. Please enter the password used during registration.")
 
 @router.get("/profile", response_model=UserResponse)
-async def get_profile(phone: Optional[str] = None, patient_id: Optional[str] = None, db = Depends(get_db)):
+async def get_profile(
+    phone: Optional[str] = None,
+    patient_id: Optional[str] = None,
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+    db = Depends(get_db)
+):
+    # Determine target identity from current authenticated user first if params missing
+    req_phone = clean_phone_number(phone) if phone else None
+    req_pid = patient_id
+
+    if current_user:
+        auth_phone = current_user.get("phone")
+        auth_pid = current_user.get("pid")
+        auth_id = current_user.get("id")
+        auth_role = current_user.get("role", "patient")
+
+        # Security Authorization Check: A non-admin patient can only view their own profile!
+        if auth_role == "patient":
+            if req_phone and req_phone != auth_phone:
+                raise HTTPException(status_code=403, detail="Forbidden: You are not authorized to view another user's profile.")
+            if req_pid and req_pid not in [auth_pid, auth_id]:
+                raise HTTPException(status_code=403, detail="Forbidden: You are not authorized to view another user's profile.")
+            req_phone = req_phone or auth_phone
+            req_pid = req_pid or auth_pid
+
     conditions = []
-    if phone:
-        clean_p = clean_phone_number(phone)
-        conditions.append({"phone": clean_p})
-    if patient_id:
-        conditions.append({"pid": patient_id})
+    if req_phone:
+        conditions.append({"phone": req_phone})
+    if req_pid:
+        conditions.append({"pid": req_pid})
         try:
-            conditions.append({"_id": ObjectId(patient_id)})
+            conditions.append({"_id": ObjectId(req_pid)})
         except Exception:
             pass
 
     if not conditions:
-        raise HTTPException(status_code=400, detail="Must provide phone or patient_id")
+        raise HTTPException(status_code=400, detail="Must provide phone, patient_id or valid bearer token.")
 
     user = await db["users"].find_one({"$or": conditions})
     if not user:
@@ -604,6 +648,7 @@ async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
     if not is_valid:
         raise HTTPException(status_code=400, detail="Invalid OTP code.")
 
+    from core.security import create_access_token
     # Find user by phone
     db_user = await db["users"].find_one({"phone": clean_phone})
     if not db_user:
@@ -628,8 +673,15 @@ async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
                 "otp_verified": True,
                 "hospital_id": pt.get("hospital_id", "6a8ea49ef17ddb14088aa5f7")
             })
+            user_id = str(res.inserted_id)
+            token = create_access_token({
+                "sub": user_id,
+                "phone": clean_phone,
+                "pid": pid,
+                "role": "patient"
+            })
             return UserResponse(
-                id=str(res.inserted_id),
+                id=user_id,
                 name=pt.get("name", "Registered Patient"),
                 email=email,
                 phone=clean_phone,
@@ -641,12 +693,22 @@ async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
                 blood_group=pt.get("blood_group"),
                 terms_accepted=True,
                 otp_verified=True,
-                hospital_id=pt.get("hospital_id", "6a8ea49ef17ddb14088aa5f7")
+                hospital_id=pt.get("hospital_id", "6a8ea49ef17ddb14088aa5f7"),
+                access_token=token,
+                token_type="bearer"
             )
         raise HTTPException(status_code=404, detail="No account registered with this phone number.")
 
+    user_id = str(db_user["_id"])
+    token = create_access_token({
+        "sub": user_id,
+        "phone": db_user.get("phone", clean_phone),
+        "pid": db_user.get("pid", ""),
+        "role": db_user.get("role", "patient")
+    })
+
     return UserResponse(
-        id=str(db_user["_id"]),
+        id=user_id,
         name=db_user["name"],
         email=db_user.get("email"),
         phone=db_user.get("phone", clean_phone),
@@ -659,5 +721,7 @@ async def login_with_otp(req: LoginWithOtpRequest, db = Depends(get_db)):
         terms_accepted=db_user.get("terms_accepted", True),
         terms_accepted_at=db_user.get("terms_accepted_at"),
         otp_verified=db_user.get("otp_verified", True),
-        hospital_id=db_user.get("hospital_id")
+        hospital_id=db_user.get("hospital_id"),
+        access_token=token,
+        token_type="bearer"
     )

@@ -12,10 +12,22 @@ IST = timezone(timedelta(hours=5, minutes=30))
 def get_ist_now() -> datetime:
     return datetime.now(IST)
 
+from core.security import get_current_user, get_optional_current_user
+
 @router.post("/", response_model=AppointmentResponse)
-async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db)):
+async def create_appointment(
+    appointment: AppointmentCreate,
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+    db = Depends(get_db)
+):
     appt_data = appointment.dict()
     now_ist = get_ist_now()
+
+    # Assign booking_user_id from authenticated user token if available
+    if current_user:
+        auth_uid = current_user.get("sub") or current_user.get("id")
+        if auth_uid and not appt_data.get("booking_user_id"):
+            appt_data["booking_user_id"] = auth_uid
 
     # Normalize human labels like "Today, Aug 28" to YYYY-MM-DD
     if not appt_data.get("appointment_date"):
@@ -262,14 +274,16 @@ async def create_appointment(appointment: AppointmentCreate, db = Depends(get_db
     # Increment total_tokens
     await db["queues"].update_one({"_id": ObjectId(queue_id)}, {"$inc": {"total_tokens": 1}})
     
-    # Create entry with linked appointment_id
+    # Create entry with linked appointment_id and booking_user_id
     from models.queue import QueueEntryInDB
+    entry_booking_uid = appt_data.get("booking_user_id") or patient_id
     db_entry = QueueEntryInDB(
         id="",
         queue_id=queue_id,
         patient_id=patient_id,
         patient_name=patient_name,
         patient_phone=patient_phone,
+        booking_user_id=entry_booking_uid,
         token_number=token_num,
         hospital_id=hospital_id,
         department_id=department_id,
@@ -297,34 +311,51 @@ async def get_patient_appointments(
     patient_id: Optional[str] = None,
     phone: Optional[str] = None,
     booking_user_id: Optional[str] = None,
+    current_user: Optional[dict] = Depends(get_optional_current_user),
     db = Depends(get_db)
 ):
     """Retrieve all past and upcoming appointments for a patient with detailed metadata."""
     conditions = []
     
-    if booking_user_id:
-        # Priority rule: If booking_user_id is provided, return all appointments booked by this user
-        conditions.append({"booking_user_id": booking_user_id})
-    else:
-        # Fallback to patient_id / phone if no booking_user_id provided
-        if patient_id and patient_id != "dummy_patient_123":
-            conditions.append({"patient_id": patient_id})
-        if phone:
-            clean_p = phone.strip().replace(" ", "").replace("-", "")
+    # Priority 1: Check authenticated user identity
+    if current_user:
+        auth_uid = current_user.get("sub") or current_user.get("id")
+        auth_phone = current_user.get("phone")
+        auth_pid = current_user.get("pid")
+
+        if auth_uid:
+            conditions.append({"booking_user_id": auth_uid})
+        if auth_pid:
+            conditions.append({"patient_id": auth_pid})
+        if auth_phone:
+            clean_p = auth_phone.strip().replace(" ", "").replace("-", "")
             if clean_p.startswith("+91"):
                 clean_p = clean_p[3:]
             conditions.append({"patient_phone": clean_p})
-            conditions.append({"patient_phone": phone})
-            try:
-                pt = await db["patients"].find_one({"phone": clean_p})
-                if pt and pt.get("pid"):
-                    conditions.append({"patient_id": pt["pid"]})
-            except Exception:
-                pass
+            conditions.append({"patient_phone": auth_phone})
 
-    query = {}
-    if conditions:
-        query["$or"] = conditions
+    # Priority 2: Use query parameters
+    if booking_user_id:
+        conditions.append({"booking_user_id": booking_user_id})
+    if patient_id and patient_id != "dummy_patient_123":
+        conditions.append({"patient_id": patient_id})
+    if phone:
+        clean_p = phone.strip().replace(" ", "").replace("-", "")
+        if clean_p.startswith("+91"):
+            clean_p = clean_p[3:]
+        conditions.append({"patient_phone": clean_p})
+        conditions.append({"patient_phone": phone})
+        try:
+            pt = await db["patients"].find_one({"phone": clean_p})
+            if pt and pt.get("pid"):
+                conditions.append({"patient_id": pt["pid"]})
+        except Exception:
+            pass
+
+    if not conditions:
+        return []
+
+    query = {"$or": conditions}
 
     cursor = db["appointments"].find(query).sort("created_at", -1)
     appointments = await cursor.to_list(length=100)
@@ -578,7 +609,18 @@ async def save_appointment_consultation(
     }
 
 @router.get("/patient/{patient_id}", response_model=List[AppointmentResponse])
-async def get_patient_appointments(patient_id: str, db = Depends(get_db)):
+async def get_patient_appointments_by_id(
+    patient_id: str,
+    current_user: Optional[dict] = Depends(get_optional_current_user),
+    db = Depends(get_db)
+):
+    if current_user:
+        auth_uid = current_user.get("sub") or current_user.get("id")
+        auth_pid = current_user.get("pid")
+        auth_phone = current_user.get("phone")
+        if patient_id not in [auth_uid, auth_pid, auth_phone] and current_user.get("role") == "patient":
+            raise HTTPException(status_code=403, detail="Access denied: You cannot view appointments for another patient.")
+
     cursor = db["appointments"].find({"patient_id": patient_id})
     appointments = await cursor.to_list(length=100)
     

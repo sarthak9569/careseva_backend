@@ -121,51 +121,70 @@ async def join_queue(entry: QueueEntryCreate, db = Depends(get_db)):
     
     return QueueEntryResponse(**entry_dict)
 
+from core.security import get_current_user, get_optional_current_user
+
 @router.get("/patient/active")
 async def get_patient_active_queue(
     patient_id: Optional[str] = None,
     phone: Optional[str] = None,
     booking_user_id: Optional[str] = None,
+    current_user: Optional[dict] = Depends(get_optional_current_user),
     db = Depends(get_db)
 ):
-    """Retrieve all active queue tokens and doctor room statuses for this patient across all departments."""
+    """Retrieve active queue tokens for the authenticated patient across all departments."""
     conditions = []
-    
-    if booking_user_id:
-        conditions.append({"booking_user_id": booking_user_id})
-    else:
-        if patient_id and patient_id != "dummy_patient_123":
-            conditions.append({"patient_id": patient_id})
-        if phone:
-            clean_p = phone.strip().replace(" ", "").replace("-", "")
+
+    # Priority 1: Use authenticated user identity if available
+    if current_user:
+        auth_uid = current_user.get("sub") or current_user.get("id")
+        auth_phone = current_user.get("phone")
+        auth_pid = current_user.get("pid")
+
+        if auth_uid:
+            conditions.append({"booking_user_id": auth_uid})
+        if auth_pid:
+            conditions.append({"patient_id": auth_pid})
+        if auth_phone:
+            clean_p = auth_phone.strip().replace(" ", "").replace("-", "")
             if clean_p.startswith("+91"):
                 clean_p = clean_p[3:]
             conditions.append({"phone": clean_p})
             conditions.append({"patient_phone": clean_p})
-            conditions.append({"patient_phone": phone})
-            try:
-                pt = await db["patients"].find_one({"phone": clean_p})
-                if pt:
-                    if pt.get("pid"):
-                        conditions.append({"patient_id": pt["pid"]})
-                    conditions.append({"patient_id": str(pt["_id"])})
-            except Exception:
-                pass
+            conditions.append({"patient_phone": auth_phone})
 
-    query = {"status": {"$in": ["WAITING", "CALLED", "IN_PROGRESS"]}}
-    if conditions:
-        query["$or"] = conditions
+    # Priority 2: Use query parameters if provided and no auth token or supplementary filter
+    if booking_user_id:
+        conditions.append({"booking_user_id": booking_user_id})
+    if patient_id and patient_id != "dummy_patient_123":
+        conditions.append({"patient_id": patient_id})
+    if phone:
+        clean_p = phone.strip().replace(" ", "").replace("-", "")
+        if clean_p.startswith("+91"):
+            clean_p = clean_p[3:]
+        conditions.append({"phone": clean_p})
+        conditions.append({"patient_phone": clean_p})
+        conditions.append({"patient_phone": phone})
+        try:
+            pt = await db["patients"].find_one({"phone": clean_p})
+            if pt:
+                if pt.get("pid"):
+                    conditions.append({"patient_id": pt["pid"]})
+                conditions.append({"patient_id": str(pt["_id"])})
+        except Exception:
+            pass
+
+    if not conditions:
+        return {"has_active_queue": False, "active_queues": []}
+
+    query = {
+        "status": {"$in": ["WAITING", "CALLED", "IN_PROGRESS"]},
+        "$or": conditions
+    }
 
     cursor = db["queue_entries"].find(query).sort("created_at", -1)
     entries = await cursor.to_list(length=20)
     
-    # Fallback to most recent active entries if none matched specific filter
-    if not entries:
-        fallback_cursor = db["queue_entries"].find(
-            {"status": {"$in": ["WAITING", "CALLED", "IN_PROGRESS"]}}
-        ).sort("created_at", -1).limit(5)
-        entries = await fallback_cursor.to_list(length=5)
-
+    # REMOVED Fallback query completely. A patient must NEVER see another patient's queue entries.
     if not entries:
         return {"has_active_queue": False, "active_queues": []}
 
