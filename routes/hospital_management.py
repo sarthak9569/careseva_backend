@@ -164,10 +164,24 @@ async def delete_doctor(hospital_id: str, doc_id: str, db = Depends(get_db)):
 
 @router.get("/{hospital_id}/dashboard-stats")
 async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
+    hosp_ids = [hospital_id]
+    try:
+        from bson import ObjectId
+        hosp = await db["hospitals"].find_one({"$or": [{"_id": ObjectId(hospital_id)}, {"_id": hospital_id}, {"hop_id": hospital_id}]})
+    except Exception:
+        hosp = await db["hospitals"].find_one({"$or": [{"_id": hospital_id}, {"hop_id": hospital_id}]})
+
+    if hosp:
+        if str(hosp["_id"]) not in hosp_ids:
+            hosp_ids.append(str(hosp["_id"]))
+        if hosp.get("hop_id") and hosp["hop_id"] not in hosp_ids:
+            hosp_ids.append(hosp["hop_id"])
+
+    h_match = {"$in": hosp_ids}
+
     # 1. Total Patients (unique patient IDs in appointments for this hospital)
-    # Using aggregation pipeline
     pipeline = [
-        {"$match": {"hospital_id": hospital_id}},
+        {"$match": {"hospital_id": h_match}},
         {"$group": {"_id": "$patient_id"}}
     ]
     unique_patients_cursor = db["appointments"].aggregate(pipeline)
@@ -177,19 +191,19 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
     # 2. Appointments Today in IST
     today_start_str = datetime.now(IST).strftime("%Y-%m-%d")
     appointments_today_count = await db["appointments"].count_documents({
-        "hospital_id": hospital_id,
+        "hospital_id": h_match,
         "appointment_date": today_start_str
     })
     
     # 3. Available Doctors
     available_doctors_count = await db["doctors"].count_documents({
-        "hospital_id": hospital_id,
+        "hospital_id": h_match,
         "status": "ACTIVE"
     })
     
     # 4. Real Revenue Calculation based on fees manually set by the hospital:
     doc_fee_map = {}
-    doctors_cursor = db["doctors"].find({"hospital_id": hospital_id})
+    doctors_cursor = db["doctors"].find({"hospital_id": h_match})
     all_hospital_doctors = await doctors_cursor.to_list(length=1000)
     for doc in all_hospital_doctors:
         fee = float(doc.get("consultation_fee") or 0.0)
@@ -199,7 +213,7 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
 
     # Today's appointments revenue
     today_appts_cursor = db["appointments"].find({
-        "hospital_id": hospital_id,
+        "hospital_id": h_match,
         "appointment_date": today_start_str
     })
     today_appts = await today_appts_cursor.to_list(length=10000)
@@ -213,7 +227,7 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
         todays_revenue += fee
 
     # Total cumulative revenue for this hospital
-    all_appts_cursor = db["appointments"].find({"hospital_id": hospital_id})
+    all_appts_cursor = db["appointments"].find({"hospital_id": h_match})
     all_appts = await all_appts_cursor.to_list(length=50000)
     total_revenue = 0.0
     for a in all_appts:
@@ -225,7 +239,7 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
         total_revenue += fee
 
     # Also include any direct walk-in patient fees from patients registry
-    patients_cursor = db["patients"].find({"hospital_id": hospital_id})
+    patients_cursor = db["patients"].find({"hospital_id": h_match})
     hosp_patients = await patients_cursor.to_list(length=50000)
     seen_patient_ids = {str(a.get("patient_id")) for a in all_appts if a.get("patient_id")}
     seen_pids = {str(a.get("pid")) for a in all_appts if a.get("pid")}
@@ -243,19 +257,37 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
                         todays_revenue += fee
 
     # 5. Recent Appointments
-    recent_cursor = db["appointments"].find({"hospital_id": hospital_id}).sort("created_at", -1).limit(5)
+    recent_cursor = db["appointments"].find({"hospital_id": h_match}).sort("created_at", -1).limit(5)
     recent_appts = await recent_cursor.to_list(length=5)
     
     recent_list = []
     for a in recent_appts:
-        # Fetch doctor details
-        doctor = await db["doctors"].find_one({"_id": ObjectId(a["doctor_id"])}) if "doctor_id" in a and a["doctor_id"] else None
-        doctor_name = doctor["name"] if doctor else "Unknown Doctor"
-        
-        # Fetch department details
-        dept = await db["departments"].find_one({"_id": ObjectId(a["department_id"])}) if "department_id" in a and a["department_id"] else None
-        dept_name = dept["name"] if dept else "Unknown Dept"
-        
+        # Fetch doctor details safely
+        doc_id_str = str(a.get("doctor_id")) if a.get("doctor_id") else None
+        doctor = None
+        if doc_id_str:
+            try:
+                doctor = await db["doctors"].find_one({"_id": ObjectId(doc_id_str)})
+            except Exception:
+                pass
+            if not doctor:
+                doctor = await db["doctors"].find_one({"$or": [{"_id": doc_id_str}, {"doc_id": doc_id_str}]})
+
+        doctor_name = doctor.get("name") if doctor else (a.get("doctor_name") or "Unknown Doctor")
+
+        # Fetch department details safely
+        dept_id_str = str(a.get("department_id")) if a.get("department_id") else None
+        dept = None
+        if dept_id_str:
+            try:
+                dept = await db["departments"].find_one({"_id": ObjectId(dept_id_str)})
+            except Exception:
+                pass
+            if not dept:
+                dept = await db["departments"].find_one({"$or": [{"_id": dept_id_str}, {"department_id": dept_id_str}]})
+
+        dept_name = dept.get("name") if dept else (a.get("department_name") or "General")
+
         patient_name = a.get("patient_name") or "Unknown Patient"
         
         recent_list.append({
@@ -264,7 +296,7 @@ async def get_dashboard_stats(hospital_id: str, db = Depends(get_db)):
             "doctor_name": doctor_name,
             "department_name": dept_name,
             "status": a.get("status", "SCHEDULED"),
-            "time": a.get("created_at").strftime("%H:%M") if a.get("created_at") else "10:00 AM"
+            "time": a.get("created_at").strftime("%H:%M") if hasattr(a.get("created_at"), "strftime") else "10:00 AM"
         })
         
     return {
