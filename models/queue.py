@@ -50,6 +50,10 @@ class QueueEntryInDB(QueueEntryBase):
     created_at: datetime
     updated_at: datetime
     patient_phone: Optional[str] = None
+    time_slot: Optional[str] = None
+    booking_source: Optional[str] = None
+    patient_age: Optional[int] = None
+    patient_gender: Optional[str] = None
 
 class QueueEntryResponse(QueueEntryBase):
     id: str
@@ -61,6 +65,7 @@ class QueueEntryResponse(QueueEntryBase):
     appointment_date: Optional[str] = None
     appointment_time: Optional[str] = None
     time_slot: Optional[str] = None
+    booking_source: Optional[str] = None
     patient_age: Optional[int] = None
     patient_gender: Optional[str] = None
     patient_phone: Optional[str] = None

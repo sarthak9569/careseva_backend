@@ -282,9 +282,34 @@ async def get_queue_entries(doctor_id: str, date: str = None, db = Depends(get_d
     cursor = db["queue_entries"].find({"queue_id": str(queue["_id"])})
     entries = await cursor.to_list(length=100)
     
+    # Collect all appointment_ids to batch fetch appointments
+    appt_ids = []
+    for e in entries:
+        aid = e.get("appointment_id")
+        if aid:
+            try:
+                appt_ids.append(ObjectId(aid))
+            except Exception:
+                pass
+
+    appts_map = {}
+    if appt_ids:
+        appts = await db["appointments"].find({"_id": {"$in": appt_ids}}).to_list(len(appt_ids))
+        for a in appts:
+            appts_map[str(a["_id"])] = a
+
     result = []
     for e in entries:
         e["id"] = str(e["_id"])
+        aid = e.get("appointment_id")
+        appt = appts_map.get(aid) if aid else None
+        if appt:
+            e["appointment_date"] = e.get("appointment_date") or appt.get("appointment_date")
+            e["patient_age"] = e.get("patient_age") if e.get("patient_age") is not None else appt.get("patient_age")
+            e["patient_gender"] = e.get("patient_gender") or appt.get("patient_gender")
+            e["patient_phone"] = e.get("patient_phone") or appt.get("patient_phone")
+            e["time_slot"] = e.get("time_slot") or appt.get("time_slot")
+            e["booking_source"] = e.get("booking_source") or appt.get("booking_source")
         result.append(QueueEntryResponse(**e))
     return result
 
