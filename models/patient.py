@@ -24,6 +24,8 @@ class PatientBase(BaseModel):
     total_fee: Optional[float] = 500.0
     paid_amount: Optional[float] = 500.0
     remaining_amount: Optional[float] = 0.0
+    time_slot: Optional[str] = "Regular OPD"
+    doctor_id: Optional[str] = None
 
 class PatientCreate(BaseModel):
     name: str
@@ -44,6 +46,8 @@ class PatientCreate(BaseModel):
     total_fee: Optional[float] = 500.0
     paid_amount: Optional[float] = 500.0
     remaining_amount: Optional[float] = 0.0
+    time_slot: Optional[str] = "Regular OPD"
+    doctor_id: Optional[str] = None
 
 class PatientInDB(PatientBase):
     id: str

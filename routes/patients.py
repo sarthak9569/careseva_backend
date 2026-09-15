@@ -315,6 +315,8 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
         patient_db_id = str(result.inserted_id)
         db_dict["id"] = patient_db_id
 
+    time_slot_val = data.get("time_slot") or "Regular OPD"
+
     # 4. Create Walk-in Appointment
     appt_dict = {
         "hospital_id": hospital_id,
@@ -329,8 +331,9 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
         "patient_phone": data.get("phone"),
         "booking_for": "myself",
         "appointment_date": appointment_date,
+        "time_slot": time_slot_val,
         "status": "BOOKED",
-        "booking_source": "DIRECT_WALKIN",
+        "booking_source": data.get("registration_source") or "DIRECT_WALKIN",
         "payment_status": payment_status,
         "payment_option": "full" if payment_status == "DONE" else "advance",
         "total_fee": total_fee,
@@ -379,6 +382,12 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
         patient_id=unique_pid,
         patient_name=data["name"],
         patient_phone=data.get("phone"),
+        patient_age=data.get("age"),
+        patient_gender=data.get("gender"),
+        time_slot=time_slot_val,
+        booking_source=data.get("registration_source") or "DIRECT_WALKIN",
+        check_in_status="CHECKED_IN",
+        check_in_time=now_ist.strftime("%Y-%m-%d %H:%M:%S"),
         token_number=token_num,
         hospital_id=hospital_id,
         department_id=dept_id,
