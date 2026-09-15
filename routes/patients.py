@@ -356,6 +356,7 @@ async def register_patient(patient: PatientCreate, db = Depends(get_db)):
             hospital_id=hospital_id,
             department_id=dept_id,
             doctor_id=doctor_id,
+            queue_date=now_ist[:10],
             created_at=now_ist,
             updated_at=now_ist,
             total_tokens=0,
