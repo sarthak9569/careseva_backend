@@ -33,6 +33,18 @@ class QueueEntryBase(BaseModel):
     status: str = "WAITING" # WAITING, CALLED, IN_CONSULTATION, COMPLETED, CANCELLED, NO_SHOW
     appointment_id: Optional[str] = None
     patient_phone: Optional[str] = None
+    slot_start_time: Optional[str] = None
+    slot_end_time: Optional[str] = None
+    check_in_status: str = "CHECKED_IN" # PENDING_CHECKIN, CHECKED_IN, IN_CONSULTATION, COMPLETED, CANCELLED, LATE_ARRIVED
+    check_in_time: Optional[str] = None
+    effective_rank: Optional[int] = 0
+
+class SlotConfiguration(BaseModel):
+    doctor_id: str
+    slot_duration_minutes: int = 30
+    max_app_tokens_per_slot: int = 3
+    max_walkin_tokens_per_slot: int = 2
+    grace_period_minutes: int = 10
 
 class QueueEntryCreate(BaseModel):
     queue_id: str
@@ -41,6 +53,7 @@ class QueueEntryCreate(BaseModel):
     appointment_id: Optional[str] = None
     patient_phone: Optional[str] = None
     appointment_date: Optional[str] = None
+    time_slot: Optional[str] = None
 
 class QueueEntryInDB(QueueEntryBase):
     id: str
@@ -54,6 +67,11 @@ class QueueEntryInDB(QueueEntryBase):
     booking_source: Optional[str] = None
     patient_age: Optional[int] = None
     patient_gender: Optional[str] = None
+    slot_start_time: Optional[str] = None
+    slot_end_time: Optional[str] = None
+    check_in_status: str = "CHECKED_IN"
+    check_in_time: Optional[str] = None
+    effective_rank: Optional[int] = 0
 
 class QueueEntryResponse(QueueEntryBase):
     id: str
@@ -69,6 +87,11 @@ class QueueEntryResponse(QueueEntryBase):
     patient_age: Optional[int] = None
     patient_gender: Optional[str] = None
     patient_phone: Optional[str] = None
+    slot_start_time: Optional[str] = None
+    slot_end_time: Optional[str] = None
+    check_in_status: Optional[str] = "CHECKED_IN"
+    check_in_time: Optional[str] = None
+    effective_rank: Optional[int] = 0
 
 # Prescription / Consultation Details
 class PrescriptionItem(BaseModel):

@@ -310,8 +310,64 @@ async def get_queue_entries(doctor_id: str, date: str = None, db = Depends(get_d
             e["patient_phone"] = e.get("patient_phone") or appt.get("patient_phone")
             e["time_slot"] = e.get("time_slot") or appt.get("time_slot")
             e["booking_source"] = e.get("booking_source") or appt.get("booking_source")
+        
+        # Determine check_in_status fallback if missing
+        if not e.get("check_in_status"):
+            src = (e.get("booking_source") or "").upper()
+            if "CARESEVA" in src or "APP" in src:
+                e["check_in_status"] = "PENDING_CHECKIN"
+            else:
+                e["check_in_status"] = "CHECKED_IN"
+                
         result.append(QueueEntryResponse(**e))
     return result
+
+@router.post("/entry/{entry_id}/check-in", response_model=QueueEntryResponse)
+async def check_in_queue_entry(entry_id: str, db = Depends(get_db)):
+    """Mark patient arrival at clinic (via Mobile App GPS/button or HMS Reception)."""
+    now_ist = get_ist_now()
+    entry = None
+    try:
+        entry = await db["queue_entries"].find_one({"_id": ObjectId(entry_id)})
+    except Exception:
+        entry = await db["queue_entries"].find_one({"id": entry_id})
+    if not entry:
+        entry = await db["queue_entries"].find_one({"appointment_id": entry_id})
+
+    if not entry:
+        raise HTTPException(status_code=404, detail="Queue entry or appointment not found")
+
+    check_in_str = now_ist.strftime("%Y-%m-%d %H:%M:%S")
+    await db["queue_entries"].update_one(
+        {"_id": entry["_id"]},
+        {"$set": {
+            "check_in_status": "CHECKED_IN",
+            "check_in_time": check_in_str,
+            "updated_at": now_ist
+        }}
+    )
+
+    # Broadcast WebSocket update
+    doctor_id = entry.get("doctor_id")
+    if doctor_id:
+        try:
+            await manager.broadcast_queue_update(doctor_id, {
+                "event": "patient_checked_in",
+                "entry_id": str(entry["_id"]),
+                "patient_name": entry.get("patient_name", "Patient"),
+                "token_number": entry.get("token_number")
+            })
+        except Exception:
+            pass
+
+    updated = await db["queue_entries"].find_one({"_id": entry["_id"]})
+    updated["id"] = str(updated["_id"])
+    return QueueEntryResponse(**updated)
+
+@router.post("/appointment/{appointment_id}/check-in", response_model=QueueEntryResponse)
+async def check_in_by_appointment(appointment_id: str, db = Depends(get_db)):
+    """Check in patient by appointment ID from Mobile App."""
+    return await check_in_queue_entry(entry_id=appointment_id, db=db)
 
 @router.get("/{doctor_id}/history", response_model=List[QueueEntryResponse])
 async def get_patient_history(doctor_id: str, date: str = None, db = Depends(get_db)):
