@@ -12,7 +12,160 @@ IST = timezone(timedelta(hours=5, minutes=30))
 def get_ist_now() -> datetime:
     return datetime.now(IST)
 
+DEFAULT_TIME_SLOTS = [
+    "09:00 AM - 09:30 AM",
+    "09:30 AM - 10:00 AM",
+    "10:00 AM - 10:30 AM",
+    "10:30 AM - 11:00 AM",
+    "11:00 AM - 11:30 AM",
+    "11:30 AM - 12:00 PM",
+    "02:00 PM - 02:30 PM",
+    "02:30 PM - 03:00 PM",
+    "03:00 PM - 03:30 PM",
+    "04:00 PM - 04:30 PM",
+    "04:30 PM - 05:00 PM",
+]
+
+def parse_time_str(t_str: str) -> Optional[datetime.time]:
+    """Parse time strings like '09:00 AM', '9:30 AM', '14:00', '02:00 PM' into time object."""
+    if not t_str:
+        return None
+    clean = t_str.strip().upper()
+    for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M", "%I %p"):
+        try:
+            return datetime.strptime(clean, fmt).time()
+        except ValueError:
+            pass
+    return None
+
+def parse_slot_start_end(slot_str: str) -> tuple[Optional[datetime.time], Optional[datetime.time]]:
+    """Parses '09:00 AM - 09:30 AM' or '09:00 AM' into (start_time, end_time)."""
+    if not slot_str:
+        return (None, None)
+    parts = slot_str.split("-")
+    if len(parts) >= 2:
+        start_t = parse_time_str(parts[0].strip())
+        end_t = parse_time_str(parts[1].strip())
+        return (start_t, end_t)
+    elif len(parts) == 1:
+        start_t = parse_time_str(parts[0].strip())
+        return (start_t, None)
+    return (None, None)
+
+def is_slot_expired(slot_str: str, appointment_date_str: str, now_ist: datetime) -> bool:
+    """
+    Returns True if slot_str on appointment_date_str has expired relative to now_ist.
+    Past date: True.
+    Future date: False.
+    Today: True if current IST time >= slot start_time (or end_time).
+    """
+    if not slot_str or not appointment_date_str:
+        return False
+    
+    target_date_str = str(appointment_date_str).strip()
+    d_lower = target_date_str.lower()
+    if "today" in d_lower:
+        target_date_str = now_ist.strftime("%Y-%m-%d")
+    elif "tomorrow" in d_lower:
+        target_date_str = (now_ist + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif "yesterday" in d_lower:
+        target_date_str = (now_ist - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    today_str = now_ist.strftime("%Y-%m-%d")
+
+    try:
+        raw_part = target_date_str.split()[0].replace(",", "")
+        target_date = datetime.strptime(raw_part, "%Y-%m-%d").date()
+        today_date = now_ist.date()
+
+        if target_date < today_date:
+            return True
+        elif target_date > today_date:
+            return False
+    except Exception:
+        pass
+
+    # If target date is today (or unparseable label):
+    start_t, end_t = parse_slot_start_end(slot_str)
+    if not start_t:
+        return False
+    
+    current_t = now_ist.time()
+    if current_t >= start_t:
+        return True
+    return False
+
 from core.security import get_current_user, get_optional_current_user
+
+@router.get("/available-slots")
+async def get_available_slots(
+    hospital_id: Optional[str] = None,
+    doctor_id: Optional[str] = None,
+    date: Optional[str] = None,
+    db = Depends(get_db)
+):
+    now_ist = get_ist_now()
+    if not date:
+        date_str = now_ist.strftime("%Y-%m-%d")
+    else:
+        d_lower = str(date).strip().lower()
+        if "today" in d_lower:
+            date_str = now_ist.strftime("%Y-%m-%d")
+        elif "tomorrow" in d_lower:
+            date_str = (now_ist + timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            date_str = date.split()[0].replace(",", "")
+
+    max_capacity_per_slot = 3
+    if doctor_id:
+        try:
+            slot_config = await db["slot_configurations"].find_one({"doctor_id": doctor_id})
+            if slot_config:
+                max_capacity_per_slot = slot_config.get("max_app_tokens_per_slot", 3)
+        except Exception:
+            pass
+
+    query = {
+        "appointment_date": {"$regex": date_str, "$options": "i"},
+        "status": {"$nin": ["CANCELLED", "NO_SHOW"]}
+    }
+    if doctor_id:
+        query["doctor_id"] = doctor_id
+    elif hospital_id:
+        query["hospital_id"] = hospital_id
+
+    existing_appts = await db["appointments"].find(query).to_list(length=500)
+    
+    slot_counts = {}
+    for appt in existing_appts:
+        slot_key = appt.get("time_slot") or appt.get("appointment_time")
+        if slot_key:
+            slot_counts[slot_key] = slot_counts.get(slot_key, 0) + 1
+
+    result_slots = []
+    for slot in DEFAULT_TIME_SLOTS:
+        start_t, end_t = parse_slot_start_end(slot)
+        expired = is_slot_expired(slot, date_str, now_ist)
+        booked_cnt = slot_counts.get(slot, 0)
+        is_full = booked_cnt >= max_capacity_per_slot
+        
+        result_slots.append({
+            "slot": slot,
+            "start_time": start_t.strftime("%I:%M %p") if start_t else "",
+            "end_time": end_t.strftime("%I:%M %p") if end_t else "",
+            "is_expired": expired,
+            "is_full": is_full,
+            "is_available": (not expired) and (not is_full),
+            "booked_count": booked_cnt,
+            "max_capacity": max_capacity_per_slot
+        })
+
+    return {
+        "date": date_str,
+        "doctor_id": doctor_id,
+        "hospital_id": hospital_id,
+        "slots": result_slots
+    }
 
 @router.post("/", response_model=AppointmentResponse)
 async def create_appointment(
@@ -40,6 +193,14 @@ async def create_appointment(
             appt_data["appointment_date"] = (now_ist + timedelta(days=1)).strftime("%Y-%m-%d")
         elif "yesterday" in d_str:
             appt_data["appointment_date"] = (now_ist - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # SLOT EXPIRATION CHECK: Prevent booking expired slots for Today
+    slot_to_check = appt_data.get("time_slot") or appt_data.get("appointment_time")
+    if slot_to_check and is_slot_expired(slot_to_check, appt_data["appointment_date"], now_ist):
+        raise HTTPException(
+            status_code=400,
+            detail=f"The selected time slot '{slot_to_check}' has already passed for {appt_data['appointment_date']}. Please choose an upcoming time slot."
+        )
 
     # RESTRICTION: Restrict multiple appointment booking from same PID on the same day for the same doctor.
     # User CAN book multiple appointments for different doctors using the same PID.

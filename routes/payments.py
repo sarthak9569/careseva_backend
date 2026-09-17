@@ -63,6 +63,20 @@ async def create_cashfree_order(
     Creates a Cashfree payment order, persists the order draft in pending_orders,
     and returns the payment_session_id & checkout_url.
     """
+    now_ist = get_ist_now()
+
+    # Slot Expiration Check: prevent order creation for past slots today
+    if request.booking_data:
+        b_slot = request.booking_data.get("selectedSlot") or request.booking_data.get("appointment_time") or request.booking_data.get("time_slot")
+        b_date = request.booking_data.get("selectedDate") or request.booking_data.get("appointment_date")
+        if b_slot and b_date:
+            from routes.appointments import is_slot_expired
+            if is_slot_expired(b_slot, b_date, now_ist):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"The selected time slot '{b_slot}' has already passed for {b_date}. Please choose an upcoming time slot."
+                )
+
     clean_amount = round(float(request.amount), 2)
     order_id = f"CS_ORD_{int(get_ist_now().timestamp())}_{uuid.uuid4().hex[:6].upper()}"
     
