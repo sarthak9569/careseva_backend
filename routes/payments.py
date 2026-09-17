@@ -69,12 +69,21 @@ async def create_cashfree_order(
     if request.booking_data:
         b_slot = request.booking_data.get("selectedSlot") or request.booking_data.get("appointment_time") or request.booking_data.get("time_slot")
         b_date = request.booking_data.get("selectedDate") or request.booking_data.get("appointment_date")
-        if b_slot and b_date:
-            from routes.appointments import is_slot_expired
-            if is_slot_expired(b_slot, b_date, now_ist):
+        if b_date:
+            from routes.appointments import is_slot_expired, extract_slot_and_date
+            actual_slot, actual_date = extract_slot_and_date(b_slot, b_date)
+            if actual_slot:
+                request.booking_data["selectedSlot"] = actual_slot
+                request.booking_data["appointment_time"] = actual_slot
+                request.booking_data["time_slot"] = actual_slot
+            if actual_date:
+                request.booking_data["selectedDate"] = actual_date
+                request.booking_data["appointment_date"] = actual_date
+
+            if is_slot_expired(actual_slot, actual_date, now_ist):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"The selected time slot '{b_slot}' has already passed for {b_date}. Please choose an upcoming time slot."
+                    detail=f"The selected time slot '{actual_slot}' has already passed for {actual_date}. Please choose an upcoming time slot."
                 )
 
     clean_amount = round(float(request.amount), 2)

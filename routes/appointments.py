@@ -52,6 +52,26 @@ def parse_slot_start_end(slot_str: str) -> tuple[Optional[datetime.time], Option
         return (start_t, None)
     return (None, None)
 
+def extract_slot_and_date(slot_str: Optional[str], date_str: Optional[str]) -> tuple[str, str]:
+    """
+    Extracts actual slot string and clean date string.
+    E.g. if date_str = "Today, Sep 17 (04:30 PM - 05:00 PM)" and slot_str = "10:00 AM",
+    returns ("04:30 PM - 05:00 PM", "Today, Sep 17").
+    """
+    final_slot = (slot_str or "").strip()
+    final_date = (date_str or "").strip()
+
+    if "(" in final_date and ")" in final_date:
+        start_idx = final_date.find("(")
+        end_idx = final_date.find(")")
+        if end_idx > start_idx:
+            extracted_slot = final_date[start_idx + 1:end_idx].strip()
+            final_date = final_date[:start_idx].strip()
+            if not final_slot or final_slot == "10:00 AM" or ("M" in extracted_slot and extracted_slot != final_slot):
+                final_slot = extracted_slot
+
+    return (final_slot, final_date)
+
 def is_slot_expired(slot_str: str, appointment_date_str: str, now_ist: datetime) -> bool:
     """
     Returns True if slot_str on appointment_date_str has expired relative to now_ist.
@@ -59,10 +79,14 @@ def is_slot_expired(slot_str: str, appointment_date_str: str, now_ist: datetime)
     Future date: False.
     Today: True if current IST time >= slot start_time (or end_time).
     """
-    if not slot_str or not appointment_date_str:
+    if not appointment_date_str:
         return False
     
-    target_date_str = str(appointment_date_str).strip()
+    actual_slot, actual_date = extract_slot_and_date(slot_str, appointment_date_str)
+    if not actual_slot:
+        return False
+
+    target_date_str = str(actual_date).strip()
     d_lower = target_date_str.lower()
     if "today" in d_lower:
         target_date_str = now_ist.strftime("%Y-%m-%d")
@@ -85,8 +109,7 @@ def is_slot_expired(slot_str: str, appointment_date_str: str, now_ist: datetime)
     except Exception:
         pass
 
-    # If target date is today (or unparseable label):
-    start_t, end_t = parse_slot_start_end(slot_str)
+    start_t, end_t = parse_slot_start_end(actual_slot)
     if not start_t:
         return False
     
@@ -182,17 +205,28 @@ async def create_appointment(
         if auth_uid and not appt_data.get("booking_user_id"):
             appt_data["booking_user_id"] = auth_uid
 
+    # Extract actual slot and clean date if embedded like "Today, Sep 17 (04:30 PM - 05:00 PM)"
+    raw_slot = appt_data.get("time_slot") or appt_data.get("appointment_time")
+    raw_date = appt_data.get("appointment_date")
+    actual_slot, actual_date = extract_slot_and_date(raw_slot, raw_date)
+
+    if actual_slot:
+        appt_data["time_slot"] = actual_slot
+        appt_data["appointment_time"] = actual_slot
+
     # Normalize human labels like "Today, Aug 28" to YYYY-MM-DD
-    if not appt_data.get("appointment_date"):
+    if not actual_date:
         appt_data["appointment_date"] = now_ist.strftime("%Y-%m-%d")
     else:
-        d_str = str(appt_data["appointment_date"]).strip().lower()
+        d_str = str(actual_date).strip().lower()
         if "today" in d_str:
             appt_data["appointment_date"] = now_ist.strftime("%Y-%m-%d")
         elif "tomorrow" in d_str:
             appt_data["appointment_date"] = (now_ist + timedelta(days=1)).strftime("%Y-%m-%d")
         elif "yesterday" in d_str:
             appt_data["appointment_date"] = (now_ist - timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            appt_data["appointment_date"] = actual_date.split()[0].replace(",", "")
 
     # SLOT EXPIRATION CHECK: Prevent booking expired slots for Today
     slot_to_check = appt_data.get("time_slot") or appt_data.get("appointment_time")
